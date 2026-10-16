@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('anixart', {
   episodeSources: (id, typeId) => ipcRenderer.invoke('api:episodeSources', { id, typeId }),
   episodes: (id, typeId, sourceId) => ipcRenderer.invoke('api:episodes', { id, typeId, sourceId }),
   resolvePlayer: (url) => ipcRenderer.invoke('player:resolve', { url }),
+  selectSubtitleFile: () => ipcRenderer.invoke('player:selectSubtitle'),
 
   // Аккаунт
   signIn: (login, password) => ipcRenderer.invoke('auth:signIn', { login, password }),

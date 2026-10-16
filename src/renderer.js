@@ -3,7 +3,7 @@
 // ── Состояние ────────────────────────────────────────────────────────────────
 const state = {
   view: 'discover',
-  store: { favorites: [], history: [], playerPositions: {}, settings: { token: '', playerMode: 'source', playerSpeed: 1, playerResize: 'contain', autoNext: true }, profile: null },
+  store: { favorites: [], history: [], playerPositions: {}, settings: { token: '', adblock: true, playerMode: 'source', playerSpeed: 1, playerResize: 'contain', autoNext: true }, profile: null },
   auth: { token: '', profile: null },
   catalog: { page: 0, sort: 2, items: [] },
   search: { page: 0, query: '', items: [] },
@@ -736,12 +736,6 @@ async function renderFriends(p, body) {
 }
 async function renderSettings() {
   viewRoot.innerHTML = '';
-  if (!isAuthed()) { viewRoot.append(msg('Войдите в аккаунт, чтобы менять настройки.')); return; }
-  viewRoot.append(spinner());
-  const my = await window.anixart.prefMy();
-  const p = state.auth.profile || {};
-  if (state.view !== 'settings') return;
-  viewRoot.innerHTML = '';
   const box = el('div', { class: 'settings-box' });
   const flash = (node, ok) => { node.textContent = ok ? 'Сохранено ✓' : 'Ошибка'; node.style.color = ok ? 'var(--good)' : 'var(--accent-3)'; setTimeout(() => { node.textContent = ''; }, 2500); };
 
@@ -749,7 +743,18 @@ async function renderSettings() {
   { const adOn = state.store.settings.adblock !== false; const cb = el('input', { type: 'checkbox' }); if (adOn) cb.checked = true;
     cb.addEventListener('change', async () => { state.store.settings.adblock = cb.checked; await window.anixart.storeSet({ settings: state.store.settings }); });
     box.append(el('label', { class: 'toggle-row' }, cb, el('span', {}, 'Блокировать рекламу в плеере (адблокер)')));
-    box.append(el('div', { class: 'hint', style: 'margin-top:6px;margin-bottom:6px' }, 'Режет рекламные сети в kodik/sibnet. Применяется при следующем запуске серии.')); }
+    box.append(el('div', { class: 'hint', style: 'margin-top:6px;margin-bottom:6px' }, 'Блокирует известные рекламные сети в плеере. Настройка сохраняется на этом компьютере и действует сразу для следующих сетевых запросов.')); }
+
+  if (!isAuthed()) {
+    viewRoot.append(box, msg('Войдите в аккаунт, чтобы менять остальные настройки профиля.'));
+    return;
+  }
+  viewRoot.append(spinner());
+  const my = await window.anixart.prefMy();
+  const p = state.auth.profile || {};
+  if (state.view !== 'settings') return;
+  viewRoot.innerHTML = '';
+  viewRoot.append(box);
 
   box.append(sectionTitle('Аватар', 'user'));
   box.append(el('div', { class: 'field' }, el('div', { style: 'display:flex;align-items:center;gap:16px' }, el('img', { src: avatarUrl(p) || '', style: 'width:72px;height:72px;border-radius:50%;object-fit:cover;background:var(--bg-3)' }), iconBtn('btn secondary', 'edit', 'Загрузить новый', changeAvatar))));
@@ -1098,19 +1103,50 @@ async function changeAvatar() {
 
 // ── Плеер ────────────────────────────────────────────────────────────────────
 async function openPlayer(r) {
+  // The player is opened from a release detail modal. Remember the screen
+  // underneath it so Back can restore that exact step and reopen the release.
+  const returnView = state.view;
   closeModal(); setView('player'); viewTitle.textContent = releaseTitle(r);
   if (!isAuthed() && !state.store.history.some((x) => x.id === r.id)) { state.store.history.unshift({ id: r.id, image: r.image, title_ru: r.title_ru, title_original: r.title_original, year: r.year, grade: r.grade }); state.store.history = state.store.history.slice(0, 60); persist(); }
-  topbarControls.append(iconBtn('btn secondary', 'back', 'Назад', () => setView('discover')));
+  const returnToRelease = () => {
+    if (fsOn) setFs(false);
+    saveNativePosition(true);
+    stopPlayer();
+    setView(returnView);
+    openRelease(r.id);
+  };
+  topbarControls.append(iconBtn('btn secondary', 'back', 'Назад', returnToRelease));
   viewRoot.innerHTML = '';
   const selectors = el('div', { class: 'player-selectors' });
   const epStrip = el('div', { class: 'episode-strip' });
+  let current = null, watchTimer = null, currentEpisode = null, episodeButtons = [], lastNativeHistoryUpdate = 0;
   const frameWrap = el('div', { class: 'player-main' });
   const bridge = new URL('playerbridge.js', location.href).href;
   const frame = el('webview', { class: 'player-frame', allowpopups: true, src: 'about:blank', preload: bridge, webpreferences: 'contextIsolation=no' });
   const nativeShell = el('div', { class: 'native-player-shell', hidden: true });
   const nativeVideo = el('video', { class: 'native-player-video', controls: true, playsinline: true, preload: 'metadata' });
   let hlsPlayer = null;
+  let externalSubtitleTrack = null;
+  let externalSubtitleUrl = '';
+  const clearExternalSubtitle = () => {
+    if (externalSubtitleTrack) { externalSubtitleTrack.remove(); externalSubtitleTrack = null; }
+    if (externalSubtitleUrl) { URL.revokeObjectURL(externalSubtitleUrl); externalSubtitleUrl = ''; }
+  };
   const nativeMessage = el('div', { class: 'native-player-message', hidden: true });
+  const gestureIndicator = el('div', { class: 'native-player-gesture', hidden: true });
+  const showNativeMessage = (message, offerSourcePlayer = false) => {
+    nativeMessage.innerHTML = '';
+    nativeMessage.append(el('div', {}, message));
+    if (offerSourcePlayer && currentEpisode) {
+      nativeMessage.append(iconBtn('btn secondary', 'play', 'Открыть плеер источника', async () => {
+        state.store.settings.playerMode = 'source';
+        await window.anixart.storeSet({ settings: state.store.settings });
+        updatePlayerModeControl(currentEpisode);
+        setPlayerSurface('source', currentEpisode);
+      }));
+    }
+    nativeMessage.hidden = false;
+  };
   const nativeTools = el('div', { class: 'native-player-tools', hidden: true });
   const qualitySelect = el('select', { class: 'native-player-speed', 'aria-label': 'Качество видео', hidden: true });
   const audioSelect = el('select', { class: 'native-player-speed', 'aria-label': 'Аудиодорожка', hidden: true });
@@ -1132,19 +1168,47 @@ async function openPlayer(r) {
     await window.anixart.storeSet({ settings: state.store.settings });
   });
   const seekButton = (label, amount) => el('button', { class: 'btn secondary', type: 'button', onclick: () => { if (Number.isFinite(nativeVideo.duration)) nativeVideo.currentTime = Math.max(0, Math.min(nativeVideo.duration, nativeVideo.currentTime + amount)); } }, label);
+  const moveEpisode = (delta) => {
+    const index = episodeButtons.findIndex((item) => item.ep === currentEpisode);
+    const next = index + delta;
+    if (index >= 0 && episodeButtons[next]) episodeButtons[next].button.click();
+  };
+  const previousEpisodeButton = el('button', { class: 'btn secondary', type: 'button', title: 'Предыдущая серия', onclick: () => moveEpisode(-1), disabled: true }, '← Серия');
+  const nextEpisodeButton = el('button', { class: 'btn secondary', type: 'button', title: 'Следующая серия', onclick: () => moveEpisode(1), disabled: true }, 'Серия →');
   const pipButton = el('button', { class: 'btn secondary', type: 'button', title: 'Картинка в картинке', onclick: async () => { try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else if (document.pictureInPictureEnabled) await nativeVideo.requestPictureInPicture(); } catch {} } }, 'Картинка в картинке');
+  const subtitleFileButton = el('button', { class: 'btn secondary', type: 'button', title: 'Загрузить файл субтитров SRT или VTT', onclick: async () => {
+    const selected = await window.anixart.selectSubtitleFile();
+    if (!selected) return;
+    if (selected.error) { showNativeMessage(selected.error); return; }
+    try {
+      let vtt = String(selected.text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+      if (selected.format === 'srt') {
+        vtt = vtt.replace(/^(\d{2}:\d{2}:\d{2}),(\d{3})\s+-->/gm, '$1.$2 -->');
+        vtt = vtt.replace(/^\s*\d+\s*\n(?=\d{2}:\d{2}:\d{2}\.\d{3}\s+-->)/gm, '');
+        vtt = `WEBVTT\n\n${vtt.trim()}\n`;
+      } else if (!/^WEBVTT(?:\s|$)/.test(vtt)) vtt = `WEBVTT\n\n${vtt.trim()}\n`;
+      clearExternalSubtitle();
+      externalSubtitleUrl = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+      externalSubtitleTrack = el('track', { kind: 'subtitles', label: selected.name || 'Внешние субтитры', srclang: 'ru', src: externalSubtitleUrl, default: true });
+      const trackElement = externalSubtitleTrack;
+      trackElement.addEventListener('load', () => { if (externalSubtitleTrack === trackElement && trackElement.track) trackElement.track.mode = 'showing'; }, { once: true });
+      trackElement.addEventListener('error', () => { if (externalSubtitleTrack === trackElement) showNativeMessage('Браузер не смог разобрать файл субтитров.'); }, { once: true });
+      nativeVideo.append(trackElement);
+      nativeMessage.hidden = true;
+    } catch (error) { showNativeMessage(`Не удалось загрузить субтитры: ${String(error && error.message || error)}`); }
+  } }, 'Файл субтитров');
   const toolSelect = (label, select) => el('label', { class: 'native-player-choice' }, label, select);
-  nativeTools.append(seekButton('−10 сек', -10), seekButton('+10 сек', 10), toolSelect('Скорость', speedSelect), toolSelect('Размер', resizeSelect), toolSelect('Вариант', providerQualitySelect), toolSelect('Качество', qualitySelect), toolSelect('Аудио', audioSelect), toolSelect('Субтитры', subtitleSelect), pipButton);
+  nativeTools.append(previousEpisodeButton, seekButton('−10 сек', -10), seekButton('+10 сек', 10), nextEpisodeButton, toolSelect('Скорость', speedSelect), toolSelect('Размер', resizeSelect), toolSelect('Вариант', providerQualitySelect), toolSelect('Качество', qualitySelect), toolSelect('Аудио', audioSelect), toolSelect('Субтитры', subtitleSelect), subtitleFileButton, pipButton);
   const resetStreamChoices = () => {
     for (const select of [providerQualitySelect, qualitySelect, audioSelect, subtitleSelect]) { select.innerHTML = ''; select.hidden = true; if (select.parentElement) select.parentElement.hidden = true; }
   };
   const showStreamChoice = (select, visible) => { select.hidden = !visible; if (select.parentElement) select.parentElement.hidden = !visible; };
   const setupHlsStream = (url, resumeAt = 0) => {
     if (!window.Hls || !window.Hls.isSupported()) {
-      nativeMessage.hidden = false;
-      nativeMessage.textContent = 'HLS-поток не поддерживается в этой версии Chromium. Попробуй плеер источника.';
+      showNativeMessage('HLS-поток не поддерживается в этой версии Chromium.', true);
       return;
     }
+    let networkRecoveryAttempts = 0, mediaRecoveryAttempts = 0;
     hlsPlayer = new window.Hls({ enableWorker: true });
     hlsPlayer.loadSource(url);
     hlsPlayer.attachMedia(nativeVideo);
@@ -1179,16 +1243,50 @@ async function openPlayer(r) {
     });
     hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
       if (!data.fatal) return;
-      nativeMessage.hidden = false;
-      nativeMessage.textContent = 'Не удалось загрузить HLS-поток. Попробуй плеер источника.';
-      if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) hlsPlayer.startLoad();
-      else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) hlsPlayer.recoverMediaError();
+      if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && networkRecoveryAttempts++ < 1) { hlsPlayer.startLoad(); return; }
+      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveryAttempts++ < 1) { hlsPlayer.recoverMediaError(); return; }
+      showNativeMessage(`Не удалось воспроизвести HLS-поток${data.details ? ` (${data.details})` : ''}.`, true);
     });
   };
   qualitySelect.addEventListener('change', () => { if (hlsPlayer) hlsPlayer.currentLevel = Number(qualitySelect.value); });
   audioSelect.addEventListener('change', () => { if (hlsPlayer) hlsPlayer.audioTrack = Number(audioSelect.value); });
   subtitleSelect.addEventListener('change', () => { if (hlsPlayer) hlsPlayer.subtitleTrack = Number(subtitleSelect.value); });
-  nativeShell.append(nativeVideo, nativeMessage);
+  nativeShell.append(nativeVideo, nativeMessage, gestureIndicator);
+  let pointerGesture = null;
+  nativeVideo.addEventListener('pointerdown', (e) => {
+    if (nativeShell.hidden || e.button !== 0 || e.offsetY >= nativeVideo.clientHeight - 48) return;
+    pointerGesture = { id: e.pointerId, x: e.clientX, y: e.clientY, time: nativeVideo.currentTime, volume: nativeVideo.volume, mode: null };
+  });
+  nativeVideo.addEventListener('pointermove', (e) => {
+    const g = pointerGesture;
+    if (!g || g.id !== e.pointerId || !(e.buttons & 1)) return;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (!g.mode && Math.max(Math.abs(dx), Math.abs(dy)) > 14) {
+      g.mode = Math.abs(dx) >= Math.abs(dy) ? 'seek' : 'volume';
+      try { nativeVideo.setPointerCapture(e.pointerId); } catch {}
+    }
+    if (g.mode === 'seek' && Number.isFinite(nativeVideo.duration)) {
+      const seconds = Math.round(dx / Math.max(1, nativeVideo.clientWidth) * 120);
+      nativeVideo.currentTime = Math.max(0, Math.min(nativeVideo.duration, g.time + seconds));
+      gestureIndicator.textContent = `${seconds >= 0 ? '+' : ''}${seconds} сек`;
+    } else if (g.mode === 'volume') {
+      nativeVideo.volume = Math.max(0, Math.min(1, g.volume - dy / Math.max(1, nativeVideo.clientHeight)));
+      if (nativeVideo.volume > 0 && nativeVideo.muted) nativeVideo.muted = false;
+      gestureIndicator.textContent = `Громкость ${Math.round(nativeVideo.volume * 100)}%`;
+    }
+    if (g.mode) { gestureIndicator.hidden = false; e.preventDefault(); }
+  });
+  const endPointerGesture = (e) => {
+    if (!pointerGesture || pointerGesture.id !== e.pointerId) return;
+    pointerGesture = null;
+    gestureIndicator.hidden = true;
+    try { if (nativeVideo.hasPointerCapture(e.pointerId)) nativeVideo.releasePointerCapture(e.pointerId); } catch {}
+  };
+  nativeVideo.addEventListener('pointerup', endPointerGesture);
+  nativeVideo.addEventListener('pointercancel', endPointerGesture);
+  nativeVideo.addEventListener('dblclick', (e) => {
+    if (e.offsetY < nativeVideo.clientHeight - 48) { e.preventDefault(); setFs(!fsOn); }
+  });
   frameWrap.append(nativeShell, nativeTools);
   // Свой полноэкранный режим — надёжно работает и для Kodik, и для Sibnet
   let fsOn = false;
@@ -1200,7 +1298,11 @@ async function openPlayer(r) {
   document.addEventListener('keydown', (e) => {
     if (!frame.isConnected) return;
     if (e.key === 'Escape' && fsOn) { setFs(false); return; }
+    if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); returnToRelease(); return; }
+    if (e.key === 'Escape' && state.view === 'player' && !fsOn) { returnToRelease(); return; }
     if (state.view !== 'player' || nativeShell.hidden || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target && e.target.tagName)) return;
+    if (e.ctrlKey && e.key === 'ArrowLeft') { e.preventDefault(); moveEpisode(-1); return; }
+    if (e.ctrlKey && e.key === 'ArrowRight') { e.preventDefault(); moveEpisode(1); return; }
     if (e.key === 'ArrowLeft') { e.preventDefault(); if (Number.isFinite(nativeVideo.duration)) nativeVideo.currentTime = Math.max(0, nativeVideo.currentTime - 10); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); if (Number.isFinite(nativeVideo.duration)) nativeVideo.currentTime = Math.min(nativeVideo.duration, nativeVideo.currentTime + 10); }
     else if (e.key.toLowerCase() === 'f') setFs(!fsOn);
@@ -1209,10 +1311,20 @@ async function openPlayer(r) {
   frameWrap.append(frame, fsExit);
   const layout = el('div', { class: 'player-layout' }, frameWrap, epStrip);
   viewRoot.append(selectors, layout);
-  let current = null, watchTimer = null, currentEpisode = null, episodeButtons = [], lastNativeHistoryUpdate = 0;
   const resolvedStreams = new Map();
+  const resolverFailures = new Set();
   state.store.playerPositions = state.store.playerPositions || {};
   const positionKey = (ep, sourceId) => `${r.id}:${sourceId}:${ep.position}`;
+  function saveNativePosition(force = false) {
+    if (!current || !currentEpisode || nativeShell.hidden || !Number.isFinite(nativeVideo.currentTime)) return;
+    const now = Date.now();
+    if (!force && now - lastNativeHistoryUpdate <= 10000) return;
+    lastNativeHistoryUpdate = now;
+    const position = Math.floor(nativeVideo.currentTime);
+    state.store.playerPositions[positionKey(currentEpisode, current.sId)] = position;
+    window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
+    if (isAuthed()) window.anixart.historyAdd(current.rId, current.sId, position).catch(() => {});
+  }
   const autoNext = el('input', { type: 'checkbox', checked: state.store.settings.autoNext !== false, 'aria-label': 'Автоматически включать следующую серию' });
   autoNext.addEventListener('change', async () => {
     state.store.settings.autoNext = autoNext.checked;
@@ -1221,6 +1333,7 @@ async function openPlayer(r) {
   const stopPlayer = () => {
     if (watchTimer) { clearTimeout(watchTimer); watchTimer = null; }
     current = null; currentEpisode = null;
+    clearExternalSubtitle();
     frame.src = 'about:blank'; frame.hidden = false;
     if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
     resetStreamChoices();
@@ -1230,6 +1343,7 @@ async function openPlayer(r) {
   const playerModeHost = el('span');
   let playerModeControl = null;
   const setPlayerSurface = (mode, ep) => {
+    clearExternalSubtitle();
     frame.hidden = mode !== 'source';
     nativeShell.hidden = mode !== 'kyu';
     nativeTools.hidden = mode !== 'kyu' || !nativeCanPlay(ep);
@@ -1251,8 +1365,7 @@ async function openPlayer(r) {
     } else if (!nativeCanPlay(ep)) {
       frame.src = 'about:blank';
       nativeShell.hidden = false;
-      nativeMessage.hidden = false;
-      nativeMessage.textContent = 'Этот источник отдаёт страницу плеера, а не прямой видеофайл. Выбери «Плеер источника».';
+      showNativeMessage('Для этого источника встроенный поток недоступен.', true);
     } else {
       frame.src = 'about:blank';
       const resolved = resolvedStreams.get(ep.url);
@@ -1262,13 +1375,25 @@ async function openPlayer(r) {
         window.anixart.resolvePlayer(ep.url).then((result) => {
           if (currentEpisode !== ep || (state.store.settings.playerMode || 'source') !== 'kyu') return;
           const streams = result && result.streams && result.streams.filter((stream) => stream && stream.url);
-          if (!streams || !streams.length) { nativeMessage.textContent = (result && result.error) || 'Не удалось разобрать ссылку этого источника.'; return; }
+          if (!streams || !streams.length) {
+            resolverFailures.add(ep.url);
+            showNativeMessage((result && result.error) || 'Не удалось разобрать ссылку этого источника.', true);
+            updatePlayerModeControl(ep);
+            return;
+          }
           streams.sort((a, b) => Number((b.quality || '').match(/\d+/)?.[0] || 0) - Number((a.quality || '').match(/\d+/)?.[0] || 0));
           resolvedStreams.set(ep.url, streams);
+          resolverFailures.delete(ep.url);
           setProviderQualityOptions(streams);
+          updatePlayerModeControl(ep);
           nativeMessage.hidden = true;
           playKyuStream(streams[0].url);
-        }).catch(() => { if (currentEpisode === ep) nativeMessage.textContent = 'Ошибка разбора ссылки источника.'; });
+        }).catch(() => {
+          if (currentEpisode !== ep) return;
+          resolverFailures.add(ep.url);
+          showNativeMessage('Ошибка разбора ссылки источника.', true);
+          updatePlayerModeControl(ep);
+        });
       } else if (resolved) {
         setProviderQualityOptions(resolved);
         playKyuStream(resolved[0].url);
@@ -1305,7 +1430,9 @@ async function openPlayer(r) {
     try {
       const url = new URL(ep.url);
       if (!/^https?:$/.test(url.protocol)) return false;
-      if (resolvedStreams.has(ep.url) || isKyuResolvable(ep)) return true;
+      if (resolvedStreams.has(ep.url)) return true;
+      if (resolverFailures.has(ep.url)) return false;
+      if (isKyuResolvable(ep)) return true;
       if (ep.iframe === true) return false;
       if (/\.m3u8$/i.test(url.pathname)) return !!(window.Hls && window.Hls.isSupported());
       return /\.(mp4|m4v|webm|ogv|ogg)$/i.test(url.pathname) && !!nativeVideo.canPlayType(url.pathname.match(/\.(mp4|m4v)$/i) ? 'video/mp4' : url.pathname.match(/\.webm$/i) ? 'video/webm' : 'video/ogg');
@@ -1345,6 +1472,9 @@ async function openPlayer(r) {
   const playEpisode = (ep, sourceId, btn) => {
     current = { rId: r.id, sId: sourceId, position: ep.position };
     currentEpisode = ep;
+    const episodeIndex = episodeButtons.findIndex((item) => item.ep === ep);
+    previousEpisodeButton.disabled = episodeIndex <= 0;
+    nextEpisodeButton.disabled = episodeIndex < 0 || episodeIndex >= episodeButtons.length - 1;
     lastNativeHistoryUpdate = 0;
     const mode = state.store.settings.playerMode || 'source';
     updatePlayerModeControl(ep);
@@ -1361,14 +1491,7 @@ async function openPlayer(r) {
     }
   };
   nativeVideo.addEventListener('timeupdate', () => {
-    if (!current || !Number.isFinite(nativeVideo.currentTime)) return;
-    const now = Date.now();
-    if (now - lastNativeHistoryUpdate > 10000) {
-      lastNativeHistoryUpdate = now;
-      state.store.playerPositions[positionKey(currentEpisode, current.sId)] = Math.floor(nativeVideo.currentTime);
-      window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
-      if (isAuthed()) window.anixart.historyAdd(current.rId, current.sId, Math.floor(nativeVideo.currentTime)).catch(() => {});
-    }
+    saveNativePosition();
   });
   nativeVideo.addEventListener('loadedmetadata', () => {
     if (!current || !currentEpisode || !nativeCanPlay(currentEpisode)) return;
@@ -1377,8 +1500,9 @@ async function openPlayer(r) {
   });
   nativeVideo.addEventListener('error', () => {
     if ((state.store.settings.playerMode || 'source') !== 'kyu' || nativeShell.hidden || hlsPlayer) return;
-    nativeMessage.hidden = false;
-    nativeMessage.textContent = 'Kyu не смог воспроизвести этот прямой поток. Попробуй плеер источника.';
+    const code = nativeVideo.error && nativeVideo.error.code;
+    const reason = code === 2 ? 'ошибка сети' : code === 3 ? 'ошибка декодирования' : code === 4 ? 'формат или ссылка не поддерживаются' : 'ошибка воспроизведения';
+    showNativeMessage(`Kyu не смог воспроизвести прямой поток: ${reason}.`, true);
   });
   nativeVideo.addEventListener('ended', () => {
     if (current && currentEpisode) {
@@ -1430,6 +1554,7 @@ async function openPlayer(r) {
     let resumeIdx = 0;
     if (eps.some((e) => e.is_watched)) { const u = eps.findIndex((e) => !e.is_watched); resumeIdx = u === -1 ? eps.length - 1 : u; }
     episodeButtons = [];
+    previousEpisodeButton.disabled = true; nextEpisodeButton.disabled = true;
     eps.forEach((ep, i) => {
       const b = el('button', { class: 'ep-btn' });
       b._sid = curSource;
@@ -1451,7 +1576,7 @@ window.__test = { openRelease, setView };
 (async function init() {
   try {
     const s = await window.anixart.storeGet();
-    if (s && typeof s === 'object') { state.store = Object.assign(state.store, s); state.store.playerPositions = s.playerPositions || {}; state.store.settings = Object.assign({ token: '', playerMode: 'source', playerSpeed: 1, playerResize: 'contain', autoNext: true }, s.settings || {}); }
+    if (s && typeof s === 'object') { state.store = Object.assign(state.store, s); state.store.playerPositions = s.playerPositions || {}; state.store.settings = Object.assign({ token: '', adblock: true, playerMode: 'source', playerSpeed: 1, playerResize: 'contain', autoNext: true }, s.settings || {}); }
     const me = await window.anixart.me();
     state.auth = { token: (me && me.token) || '', profile: (me && me.profile) || null };
   } catch {}

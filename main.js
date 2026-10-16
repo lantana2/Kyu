@@ -276,6 +276,25 @@ function registerIpc() {
     if (host === 'video.sibnet.ru') return resolveSibnetStream(url);
     return resolveAdditionalStream(url);
   });
+  ipcMain.handle('player:selectSubtitle', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Выберите файл субтитров',
+      properties: ['openFile'],
+      filters: [{ name: 'Субтитры', extensions: ['srt', 'vtt'] }],
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) return null;
+    try {
+      const filePath = result.filePaths[0];
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile() || stat.size > 10 * 1024 * 1024) return { error: 'Файл субтитров должен быть меньше 10 МБ.' };
+      const extension = path.extname(filePath).toLowerCase();
+      if (!['.srt', '.vtt'].includes(extension)) return { error: 'Поддерживаются только файлы SRT и WebVTT.' };
+      return { name: path.basename(filePath), format: extension.slice(1), text: fs.readFileSync(filePath, 'utf8') };
+    } catch (error) {
+      return { error: `Не удалось прочитать файл субтитров: ${String(error && error.message || error)}` };
+    }
+  });
   ipcMain.handle('api:episodeTypes', (_e, { id }) => apiRequest(`/episode/${id}`));
   ipcMain.handle('api:episodeSources', (_e, { id, typeId }) => apiRequest(`/episode/${id}/${typeId}`));
   ipcMain.handle('api:episodes', (_e, { id, typeId, sourceId }) =>
@@ -478,7 +497,7 @@ const AD_HOSTS = [
   'rtb.com', 'adnxs.com', 'rubiconproject.com', 'pubmatic.com', 'openx.net', 'innovid.com',
   'serving-sys.ru', 'bs.serving-sys.ru', 'ad.mail.ru', 'adsrvr.org', 'adform.net',
 ];
-const AD_URL_MARKERS = /(?:^|[/?&=._-])(?:vast|vpaid|preroll|pre-roll|instream|adfox|adserver|adservice|adsystem|yandexad|doubleclick|adnxs|advertising|impression)(?:$|[/?&=._-])/i;
+const AD_URL_MARKERS = /(?:^|[/?&=._-])(?:ad|ads|vast|vpaid|preroll|pre-roll|instream|adfox|adserver|adservice|adsystem|yandexad|doubleclick|adnxs|advert|advertising|commercial|sponsor|impression)(?:$|[/?&=._-])/i;
 const AD_HOST_LABEL = /(?:^|[.-])(?:ads?|adserver|adfox|advert|advertising|vast|vpaid|prebid|tracker|tracking|impression)(?:[.-]|$)/i;
 function isAdUrl(url) {
   let parsed;

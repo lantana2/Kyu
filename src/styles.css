@@ -297,6 +297,8 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139,92,255
 .native-player-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .native-player-message { position: absolute; inset: 0; display: grid; place-items: center; padding: 28px; color: var(--text-dim); text-align: center; background: rgba(0,0,0,.72); }
 .native-player-message[hidden] { display: none; }
+.native-player-gesture { position: absolute; z-index: 4; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 10px 16px; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; color: #fff; background: rgba(0,0,0,.72); font-size: 15px; font-weight: 650; pointer-events: none; }
+.native-player-gesture[hidden] { display: none; }
 .native-player-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .native-player-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .native-player-speed { height: 36px; padding: 0 10px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 9px; }
