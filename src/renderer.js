@@ -13,8 +13,8 @@ const state = {
 };
 const isAuthed = () => !!state.auth.token;
 
-// Ссылки автора (замени на свои)
-const LINKS = { github: 'https://github.com/cakkac1dev', telegram: 'https://t.me/cakkac' };
+// Ссылки автора
+const LINKS = { github: 'https://github.com/lantana2' };
 function ext(url) { window.anixart.openExternal(url); }
 function setupChrome() {
   // кнопки управления окном
@@ -28,8 +28,7 @@ function setupChrome() {
   if (fl) {
     fl.innerHTML = '';
     const gh = el('a', { onclick: () => ext(LINKS.github) }, ic('user', 13), 'GitHub');
-    const tg = el('a', { onclick: () => ext(LINKS.telegram) }, ic('feed', 13), 'Telegram');
-    fl.append(gh, tg);
+    fl.append(gh);
   }
   // дисклеймер
   const dsc = $('#disclaimer');

@@ -18,9 +18,9 @@
 
 ## ⬇️ Скачать
 
-[![Скачать](https://img.shields.io/badge/Скачать-Kyu-7c5cff?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/cakkac1dev/Kyu/releases/latest)
+[![Скачать](https://img.shields.io/badge/Скачать-Kyu-7c5cff?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/lantana2/Kyu/releases/latest)
 
-Последняя версия — на странице **[Releases](https://github.com/cakkac1dev/Kyu/releases/latest)**. Два варианта:
+Последняя версия — на странице **[Releases](https://github.com/lantana2/Kyu/releases/latest)**. Два варианта:
 
 - **`Kyu-Setup-<версия>.exe`** — установщик (ставит в меню Пуск + ярлык на рабочий стол).
 - **`Kyu-<версия>-win.zip`** — переносимая версия: распакуй и запусти `Kyu.exe` из папки.
