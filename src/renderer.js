@@ -3,11 +3,11 @@
 // ── Состояние ────────────────────────────────────────────────────────────────
 const state = {
   view: 'discover',
-  store: { favorites: [], history: [], playerPositions: {}, settings: { token: '', adblock: true, playerMode: 'source', playerSpeed: 1, playerResize: 'contain', autoNext: true }, profile: null },
+  store: { favorites: [], history: [], playerPositions: {}, settings: { token: '', adblock: true, autoNext: true }, profile: null },
   auth: { token: '', profile: null },
-  catalog: { page: 0, sort: 2, items: [] },
+  catalog: { page: 0, sort: 2, items: [], requestId: 0 },
   search: { page: 0, query: '', items: [] },
-  discover: { banners: [], watching: [] },
+  discover: { banners: [], watching: [], recommendations: [], recommendationPage: 0, requestId: 0 },
   bm: { tab: 1, page: 0, col: null },
   updatesPage: 0,
   releaseUpdatesPage: 0,
@@ -17,6 +17,7 @@ const state = {
   socialPage: 0,
   notificationTab: 'all',
   profileTab: 'stats',
+  profileHistoryPage: 0,
 };
 const isAuthed = () => !!state.auth.token;
 
@@ -103,6 +104,9 @@ const ICONS = {
   fire: '<path d="M12 22c4 0 6-2.6 6-6 0-3-2-5-3-7-1.5 1-2 2-2 3 0-2-1-4-3-6-.5 3-2.5 4-3.5 6.5C5.6 9 5 10.5 5 13c0 4 3 9 7 9z"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
   clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>',
+  history: '<path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
+  refresh: '<path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.6-2L20 12M4 12l2.8 5a7 7 0 0 0 11.6-2"/>',
+  next: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
   winmin: '<line x1="5" y1="12" x2="19" y2="12"/>',
   winmax: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
   winclose: '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
@@ -181,7 +185,8 @@ function setView(view) {
   document.querySelectorAll('.nav-pill').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   viewTitle.textContent = VIEW_TITLES[view] || '';
   topbarControls.innerHTML = ''; viewRoot.innerHTML = '';
-  (VIEWS[view] || (() => {}))();
+  if (view === 'catalog') loadCatalog();
+  else (VIEWS[view] || (() => {}))();
 }
 document.querySelectorAll('.nav-pill').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 const topSearchInput = $('#topSearchInput');
@@ -189,33 +194,71 @@ topSearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { con
 
 // ── Обзор ────────────────────────────────────────────────────────────────────
 async function renderDiscover() {
+  const requestId = ++state.discover.requestId;
   viewRoot.innerHTML = ''; viewRoot.append(skeletonGrid(10));
-  const [intRes, watchRes] = await Promise.all([window.anixart.discoverInteresting(), window.anixart.discoverWatching(0)]);
-  if (state.view !== 'discover') return;
-  state.discover.banners = (intRes && intRes.content) || [];
-  state.discover.watching = (watchRes && watchRes.content) || [];
+  topbarControls.innerHTML = '';
+  topbarControls.append(iconBtn('btn secondary', 'refresh', 'Обновить обзор', () => renderDiscover()));
+  const [intRes, watchRes, recommendationsRes] = await Promise.all([
+    window.anixart.discoverInteresting(), window.anixart.discoverWatching(0), window.anixart.discoverRecommendations(-1, 0),
+  ]);
+  if (state.view !== 'discover' || requestId !== state.discover.requestId) return;
+  state.discover.banners = apiItems(intRes);
+  state.discover.watching = apiItems(watchRes);
+  state.discover.recommendations = apiItems(recommendationsRes);
+  state.discover.recommendationPage = 0;
   viewRoot.innerHTML = '';
   if (state.discover.banners.length) {
     const rail = el('div', { class: 'hero-rail' });
-    state.discover.banners.forEach((b) => rail.append(el('div', { class: 'hero-card', onclick: () => { if (b.action) openRelease(Number(b.action)); } },
+    state.discover.banners.forEach((b) => rail.append(el('div', { class: 'hero-card', onclick: () => {
+      const action = String(b.action || '');
+      if (Number(b.type) === 1 && /^\d+$/.test(action)) openRelease(Number(action));
+      else if (Number(b.type) === 2 && /^https?:\/\//i.test(action)) ext(action);
+      else if (Number(b.type) === 3 && /^\d+$/.test(action)) {
+        if (!isAuthed()) { alert('Войдите в аккаунт, чтобы открыть коллекцию.'); return; }
+        state.bm.tab = 'col'; state.bm.page = 0; state.bm.col = { id: Number(action), title: b.title || '' }; setView('bookmarks');
+      }
+      else if (/^https?:\/\//i.test(action)) ext(action);
+    } },
       el('img', { src: b.image || '', alt: '' }), el('div', { class: 'hero-text' }, el('h3', {}, b.title || ''), el('p', {}, b.description || '')))));
-    viewRoot.append(sectionTitle('Интересное', 'sparkle'), rail);
+    const railArrow = (name, title, direction) => el('button', { class: 'rail-arrow', type: 'button', title, 'aria-label': title, onclick: () => rail.scrollBy({ left: direction * 500, behavior: 'smooth' }) }, ic(name, 16));
+    viewRoot.append(sectionTitle('Интересное', 'sparkle'), el('div', { class: 'hero-rail-wrap' }, railArrow('back', 'Листать влево', -1), rail, railArrow('next', 'Листать вправо', 1)));
+  }
+  if (state.discover.recommendations.length) {
+    viewRoot.append(renderDiscoverRecommendationBlock());
   }
   viewRoot.append(sectionTitle('Сейчас смотрят', 'fire'), makeGrid(state.discover.watching));
+}
+async function loadDiscoverRecommendations() {
+  const previousPage = state.discover.recommendationPage + 1;
+  const res = await window.anixart.discoverRecommendations(-1, previousPage);
+  if (state.view !== 'discover') return;
+  const items = apiItems(res);
+  if (!items.length) return;
+  state.discover.recommendationPage = previousPage;
+  state.discover.recommendations.push(...items);
+  const oldBlock = viewRoot.querySelector('.discover-recommendations');
+  if (oldBlock) oldBlock.replaceWith(renderDiscoverRecommendationBlock());
+}
+function renderDiscoverRecommendationBlock() {
+  return el('section', { class: 'discover-recommendations' }, sectionTitle('Рекомендации', 'sparkle'),
+    makeGrid(state.discover.recommendations), iconBtn('btn secondary', 'next', 'Ещё рекомендации', () => loadDiscoverRecommendations()));
 }
 
 // ── Каталог ──────────────────────────────────────────────────────────────────
 async function loadCatalog() {
+  const requestId = ++state.catalog.requestId;
   viewRoot.innerHTML = ''; viewRoot.append(skeletonGrid());
   const res = await window.anixart.filter(state.catalog.page, { sort: state.catalog.sort });
-  state.catalog.items = res.content || [];
+  if (requestId !== state.catalog.requestId) return;
+  state.catalog.items = apiItems(res);
   if (state.view === 'catalog') renderCatalog();
 }
 function renderCatalog() {
   topbarControls.innerHTML = '';
   topbarControls.append(ddSelect(SORT_OPTIONS, state.catalog.sort, (v) => { state.catalog.sort = Number(v); state.catalog.page = 0; loadCatalog(); }, { right: true }));
+  topbarControls.append(iconBtn('btn secondary', 'refresh', 'Обновить каталог', () => loadCatalog()));
   viewRoot.innerHTML = '';
-  if (!state.catalog.items.length) { loadCatalog(); return; }
+  if (!state.catalog.items.length) { viewRoot.append(msg('На этой странице каталог пуст.')); return; }
   viewRoot.append(makeGrid(state.catalog.items));
   viewRoot.append(makePager(state.catalog.page, () => { state.catalog.page--; loadCatalog(); }, () => { state.catalog.page++; loadCatalog(); }));
 }
@@ -348,16 +391,19 @@ function renderUpdateItem(item) {
 }
 async function renderUpdates() {
   viewRoot.innerHTML = ''; viewRoot.append(spinner());
+  topbarControls.innerHTML = '';
+  topbarControls.append(iconBtn('btn secondary', 'refresh', 'Обновить', () => renderUpdates()));
   const page = state.updatesPage;
-  const res = await window.anixart.latest(page);
+  // У AniXart нет глобального latest endpoint для серий. Сортировка каталога
+  // sort=1 — официальный список релизов с новыми эпизодами.
+  const res = await window.anixart.filter(page, { sort: 1 });
   if (state.view !== 'updates') return;
   viewRoot.innerHTML = '';
   if (res && (res._error || res._empty || (res.code && res.code !== 0))) {
-    viewRoot.append(msg('Не удалось загрузить обновления AniXart. Проверьте соединение и попробуйте ещё раз.'));
+    viewRoot.append(msg('Не удалось загрузить список новых серий. Проверьте соединение и нажмите «Обновить».'));
   } else {
     const items = apiItems(res);
-    if (!items.length) viewRoot.append(msg('Обновлений пока нет.'));
-    else { const list = el('div', { class: 'updates-list' }); items.forEach((item) => list.append(renderUpdateItem(item))); viewRoot.append(list); }
+    viewRoot.append(el('div', { class: 'muted updates-description' }, 'Релизы отсортированы AniXart по выходу новых серий.'), makeGrid(items, 'Новых серий пока нет.'));
   }
   viewRoot.append(makePager(page, () => { state.updatesPage = Math.max(0, page - 1); renderUpdates(); }, () => { state.updatesPage = page + 1; renderUpdates(); }));
 }
@@ -599,7 +645,9 @@ async function renderProfile() {
 
   // Вкладки профиля
   const tabs = el('div', { class: 'tabs', style: 'margin-top:22px' });
-  [['stats', 'Статистика', 'stats'], ['wall', 'Стена', 'edit'], ['votes', 'Оценки релизов', 'star'], ['friends', 'Друзья', 'friends']].forEach(([k, lbl, icon]) => { const t = el('button', { class: 'tab tab-ic' + (state.profileTab === k ? ' active' : ''), onclick: () => { state.profileTab = k; renderProfileTab(p, body); tabs.querySelectorAll('.tab').forEach((x) => x.classList.remove('active')); t.classList.add('active'); } }, ic(icon, 15), el('span', {}, lbl)); tabs.append(t); });
+  const profileTabs = [['stats', 'Статистика', 'stats'], ['wall', 'Стена', 'edit'], ['votes', 'Оценки релизов', 'star'], ['friends', 'Друзья', 'friends']];
+  if (isMe) profileTabs.push(['history', 'История', 'history']);
+  profileTabs.forEach(([k, lbl, icon]) => { const t = el('button', { class: 'tab tab-ic' + (state.profileTab === k ? ' active' : ''), onclick: () => { state.profileTab = k; renderProfileTab(p, body); tabs.querySelectorAll('.tab').forEach((x) => x.classList.remove('active')); t.classList.add('active'); } }, ic(icon, 15), el('span', {}, lbl)); tabs.append(t); });
   const body = el('div', {});
   viewRoot.append(tabs, body);
   renderProfileTab(p, body);
@@ -621,6 +669,19 @@ function renderProfileTab(p, body) {
   if (state.profileTab === 'wall') return renderWall(p, body);
   if (state.profileTab === 'votes') return renderVotes(p, body);
   if (state.profileTab === 'friends') return renderFriends(p, body);
+  if (state.profileTab === 'history' && !state.otherProfileId) return renderProfileHistory(body);
+}
+async function renderProfileHistory(body) {
+  body.append(spinner());
+  const page = state.profileHistoryPage;
+  const res = await window.anixart.historyList(page);
+  if (!body.isConnected || state.profileTab !== 'history') return;
+  const items = apiItems(res);
+  body.innerHTML = '';
+  body.append(makeGrid(items, 'История просмотра пока пуста.'));
+  if (items.length) body.append(makePager(page,
+    () => { state.profileHistoryPage = Math.max(0, page - 1); renderProfileHistory(body); },
+    () => { state.profileHistoryPage = page + 1; renderProfileHistory(body); }));
 }
 async function renderWall(p, body) {
   const isMe = !state.otherProfileId;
@@ -1103,468 +1164,156 @@ async function changeAvatar() {
 
 // ── Плеер ────────────────────────────────────────────────────────────────────
 async function openPlayer(r) {
-  // The player is opened from a release detail modal. Remember the screen
-  // underneath it so Back can restore that exact step and reopen the release.
   const returnView = state.view;
   closeModal(); setView('player'); viewTitle.textContent = releaseTitle(r);
-  if (!isAuthed() && !state.store.history.some((x) => x.id === r.id)) { state.store.history.unshift({ id: r.id, image: r.image, title_ru: r.title_ru, title_original: r.title_original, year: r.year, grade: r.grade }); state.store.history = state.store.history.slice(0, 60); persist(); }
-  const returnToRelease = () => {
-    if (fsOn) setFs(false);
-    saveNativePosition(true);
-    stopPlayer();
-    setView(returnView);
-    openRelease(r.id);
-  };
+  if (!isAuthed() && !state.store.history.some((x) => x.id === r.id)) {
+    state.store.history.unshift({ id: r.id, image: r.image, title_ru: r.title_ru, title_original: r.title_original, year: r.year, grade: r.grade });
+    state.store.history = state.store.history.slice(0, 60); persist();
+  }
+  let current = null, currentEpisode = null, episodeButtons = [], watchMarkedEpisode = null, lastSourceTime = null, lastSourceDuration = null;
+  const returnToRelease = () => { if (fsOn) setFs(false); stopPlayer(); setView(returnView); openRelease(r.id); };
   topbarControls.append(iconBtn('btn secondary', 'back', 'Назад', returnToRelease));
   viewRoot.innerHTML = '';
   const selectors = el('div', { class: 'player-selectors' });
   const epStrip = el('div', { class: 'episode-strip' });
-  let current = null, watchTimer = null, currentEpisode = null, episodeButtons = [], lastNativeHistoryUpdate = 0;
   const frameWrap = el('div', { class: 'player-main' });
   const bridge = new URL('playerbridge.js', location.href).href;
   const frame = el('webview', { class: 'player-frame', allowpopups: true, src: 'about:blank', preload: bridge, webpreferences: 'contextIsolation=no' });
-  const nativeShell = el('div', { class: 'native-player-shell', hidden: true });
-  const nativeVideo = el('video', { class: 'native-player-video', controls: true, playsinline: true, preload: 'metadata' });
-  let hlsPlayer = null;
-  let externalSubtitleTrack = null;
-  let externalSubtitleUrl = '';
-  const clearExternalSubtitle = () => {
-    if (externalSubtitleTrack) { externalSubtitleTrack.remove(); externalSubtitleTrack = null; }
-    if (externalSubtitleUrl) { URL.revokeObjectURL(externalSubtitleUrl); externalSubtitleUrl = ''; }
-  };
-  const nativeMessage = el('div', { class: 'native-player-message', hidden: true });
-  const gestureIndicator = el('div', { class: 'native-player-gesture', hidden: true });
-  const showNativeMessage = (message, offerSourcePlayer = false) => {
-    nativeMessage.innerHTML = '';
-    nativeMessage.append(el('div', {}, message));
-    if (offerSourcePlayer && currentEpisode) {
-      nativeMessage.append(iconBtn('btn secondary', 'play', 'Открыть плеер источника', async () => {
-        state.store.settings.playerMode = 'source';
-        await window.anixart.storeSet({ settings: state.store.settings });
-        updatePlayerModeControl(currentEpisode);
-        setPlayerSurface('source', currentEpisode);
-      }));
-    }
-    nativeMessage.hidden = false;
-  };
-  const nativeTools = el('div', { class: 'native-player-tools', hidden: true });
-  const qualitySelect = el('select', { class: 'native-player-speed', 'aria-label': 'Качество видео', hidden: true });
-  const audioSelect = el('select', { class: 'native-player-speed', 'aria-label': 'Аудиодорожка', hidden: true });
-  const subtitleSelect = el('select', { class: 'native-player-speed', 'aria-label': 'Субтитры', hidden: true });
-  const providerQualitySelect = el('select', { class: 'native-player-speed', 'aria-label': 'Вариант потока', hidden: true });
-  const resizeSelect = el('select', { class: 'native-player-speed', 'aria-label': 'Размер видео' });
-  [['contain', 'Вписать'], ['cover', 'Заполнить'], ['fill', 'Растянуть']].forEach(([value, label]) => resizeSelect.append(el('option', { value, selected: value === (state.store.settings.playerResize || 'contain') }, label)));
-  resizeSelect.addEventListener('change', async () => {
-    nativeVideo.style.objectFit = resizeSelect.value;
-    state.store.settings.playerResize = resizeSelect.value;
-    await window.anixart.storeSet({ settings: state.store.settings });
-  });
-  nativeVideo.style.objectFit = resizeSelect.value;
-  const speedSelect = el('select', { class: 'native-player-speed', 'aria-label': 'Скорость воспроизведения' });
-  [[0.25, '0.25×'], [0.5, '0.5×'], [0.75, '0.75×'], [1, '1×'], [1.25, '1.25×'], [1.5, '1.5×'], [1.75, '1.75×'], [2, '2×'], [2.5, '2.5×'], [3, '3×']].forEach(([value, label]) => speedSelect.append(el('option', { value, selected: value === (Number(state.store.settings.playerSpeed) || 1) }, label)));
-  speedSelect.addEventListener('change', async () => {
-    nativeVideo.playbackRate = Number(speedSelect.value) || 1;
-    state.store.settings.playerSpeed = nativeVideo.playbackRate;
-    await window.anixart.storeSet({ settings: state.store.settings });
-  });
-  const seekButton = (label, amount) => el('button', { class: 'btn secondary', type: 'button', onclick: () => { if (Number.isFinite(nativeVideo.duration)) nativeVideo.currentTime = Math.max(0, Math.min(nativeVideo.duration, nativeVideo.currentTime + amount)); } }, label);
+  let fsOn = false;
+  const fsExit = el('button', { class: 'player-fs-exit', title: 'Выйти из полного экрана (Esc)' }); fsExit.append(ic('fsexit', 18));
+  const setFs = (on) => { fsOn = on; frame.classList.toggle('fs', on); fsExit.classList.toggle('show', on); window.anixart.winSetFullScreen(on); };
+  fsExit.addEventListener('click', () => setFs(false));
+  frame.addEventListener('enter-html-full-screen', () => setFs(true));
+  frame.addEventListener('leave-html-full-screen', () => setFs(false));
+  frameWrap.append(frame, fsExit);
+  const previousEpisodeButton = el('button', { class: 'btn secondary', type: 'button', title: 'Предыдущая серия', disabled: true }, '← Серия');
+  const nextEpisodeButton = el('button', { class: 'btn secondary', type: 'button', title: 'Следующая серия', disabled: true }, 'Серия →');
   const moveEpisode = (delta) => {
     const index = episodeButtons.findIndex((item) => item.ep === currentEpisode);
     const next = index + delta;
     if (index >= 0 && episodeButtons[next]) episodeButtons[next].button.click();
   };
-  const previousEpisodeButton = el('button', { class: 'btn secondary', type: 'button', title: 'Предыдущая серия', onclick: () => moveEpisode(-1), disabled: true }, '← Серия');
-  const nextEpisodeButton = el('button', { class: 'btn secondary', type: 'button', title: 'Следующая серия', onclick: () => moveEpisode(1), disabled: true }, 'Серия →');
-  const pipButton = el('button', { class: 'btn secondary', type: 'button', title: 'Картинка в картинке', onclick: async () => { try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else if (document.pictureInPictureEnabled) await nativeVideo.requestPictureInPicture(); } catch {} } }, 'Картинка в картинке');
-  const subtitleFileButton = el('button', { class: 'btn secondary', type: 'button', title: 'Загрузить файл субтитров SRT или VTT', onclick: async () => {
-    const selected = await window.anixart.selectSubtitleFile();
-    if (!selected) return;
-    if (selected.error) { showNativeMessage(selected.error); return; }
-    try {
-      let vtt = String(selected.text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-      if (selected.format === 'srt') {
-        vtt = vtt.replace(/^(\d{2}:\d{2}:\d{2}),(\d{3})\s+-->/gm, '$1.$2 -->');
-        vtt = vtt.replace(/^\s*\d+\s*\n(?=\d{2}:\d{2}:\d{2}\.\d{3}\s+-->)/gm, '');
-        vtt = `WEBVTT\n\n${vtt.trim()}\n`;
-      } else if (!/^WEBVTT(?:\s|$)/.test(vtt)) vtt = `WEBVTT\n\n${vtt.trim()}\n`;
-      clearExternalSubtitle();
-      externalSubtitleUrl = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
-      externalSubtitleTrack = el('track', { kind: 'subtitles', label: selected.name || 'Внешние субтитры', srclang: 'ru', src: externalSubtitleUrl, default: true });
-      const trackElement = externalSubtitleTrack;
-      trackElement.addEventListener('load', () => { if (externalSubtitleTrack === trackElement && trackElement.track) trackElement.track.mode = 'showing'; }, { once: true });
-      trackElement.addEventListener('error', () => { if (externalSubtitleTrack === trackElement) showNativeMessage('Браузер не смог разобрать файл субтитров.'); }, { once: true });
-      nativeVideo.append(trackElement);
-      nativeMessage.hidden = true;
-    } catch (error) { showNativeMessage(`Не удалось загрузить субтитры: ${String(error && error.message || error)}`); }
-  } }, 'Файл субтитров');
-  const toolSelect = (label, select) => el('label', { class: 'native-player-choice' }, label, select);
-  nativeTools.append(previousEpisodeButton, seekButton('−10 сек', -10), seekButton('+10 сек', 10), nextEpisodeButton, toolSelect('Скорость', speedSelect), toolSelect('Размер', resizeSelect), toolSelect('Вариант', providerQualitySelect), toolSelect('Качество', qualitySelect), toolSelect('Аудио', audioSelect), toolSelect('Субтитры', subtitleSelect), subtitleFileButton, pipButton);
-  const resetStreamChoices = () => {
-    for (const select of [providerQualitySelect, qualitySelect, audioSelect, subtitleSelect]) { select.innerHTML = ''; select.hidden = true; if (select.parentElement) select.parentElement.hidden = true; }
-  };
-  const showStreamChoice = (select, visible) => { select.hidden = !visible; if (select.parentElement) select.parentElement.hidden = !visible; };
-  const setupHlsStream = (url, resumeAt = 0) => {
-    if (!window.Hls || !window.Hls.isSupported()) {
-      showNativeMessage('HLS-поток не поддерживается в этой версии Chromium.', true);
-      return;
-    }
-    let networkRecoveryAttempts = 0, mediaRecoveryAttempts = 0;
-    hlsPlayer = new window.Hls({ enableWorker: true });
-    hlsPlayer.loadSource(url);
-    hlsPlayer.attachMedia(nativeVideo);
-    hlsPlayer.on(window.Hls.Events.MANIFEST_PARSED, (_event, data) => {
-      qualitySelect.innerHTML = '';
-      qualitySelect.append(el('option', { value: '-1' }, 'Авто'));
-      hlsPlayer.levels.forEach((level, i) => qualitySelect.append(el('option', { value: String(i) }, level.height ? `${level.height}p` : `${Math.round((level.bitrate || 0) / 1000)} кбит/с`)));
-      showStreamChoice(qualitySelect, hlsPlayer.levels.length > 1);
-      audioSelect.innerHTML = '';
-      hlsPlayer.audioTracks.forEach((track, i) => audioSelect.append(el('option', { value: String(i) }, track.name || track.lang || `Дорожка ${i + 1}`)));
-      showStreamChoice(audioSelect, hlsPlayer.audioTracks.length > 1);
-      subtitleSelect.innerHTML = '';
-      subtitleSelect.append(el('option', { value: '-1' }, 'Выкл'));
-      hlsPlayer.subtitleTracks.forEach((track, i) => subtitleSelect.append(el('option', { value: String(i) }, track.name || track.lang || `Субтитры ${i + 1}`)));
-      showStreamChoice(subtitleSelect, hlsPlayer.subtitleTracks.length > 0);
-      if (resumeAt > 0) nativeVideo.currentTime = resumeAt;
-      nativeVideo.playbackRate = Number(speedSelect.value) || 1;
-      nativeVideo.play().catch(() => {});
-    });
-    hlsPlayer.on(window.Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-      const selected = hlsPlayer.audioTrack;
-      audioSelect.innerHTML = '';
-      hlsPlayer.audioTracks.forEach((track, i) => audioSelect.append(el('option', { value: String(i), selected: i === selected }, track.name || track.lang || `Дорожка ${i + 1}`)));
-      showStreamChoice(audioSelect, hlsPlayer.audioTracks.length > 1);
-    });
-    hlsPlayer.on(window.Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
-      const selected = hlsPlayer.subtitleTrack;
-      subtitleSelect.innerHTML = '';
-      subtitleSelect.append(el('option', { value: '-1', selected: selected < 0 }, 'Выкл'));
-      hlsPlayer.subtitleTracks.forEach((track, i) => subtitleSelect.append(el('option', { value: String(i), selected: i === selected }, track.name || track.lang || `Субтитры ${i + 1}`)));
-      showStreamChoice(subtitleSelect, hlsPlayer.subtitleTracks.length > 0);
-    });
-    hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
-      if (!data.fatal) return;
-      if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && networkRecoveryAttempts++ < 1) { hlsPlayer.startLoad(); return; }
-      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveryAttempts++ < 1) { hlsPlayer.recoverMediaError(); return; }
-      showNativeMessage(`Не удалось воспроизвести HLS-поток${data.details ? ` (${data.details})` : ''}.`, true);
-    });
-  };
-  qualitySelect.addEventListener('change', () => { if (hlsPlayer) hlsPlayer.currentLevel = Number(qualitySelect.value); });
-  audioSelect.addEventListener('change', () => { if (hlsPlayer) hlsPlayer.audioTrack = Number(audioSelect.value); });
-  subtitleSelect.addEventListener('change', () => { if (hlsPlayer) hlsPlayer.subtitleTrack = Number(subtitleSelect.value); });
-  nativeShell.append(nativeVideo, nativeMessage, gestureIndicator);
-  let pointerGesture = null;
-  nativeVideo.addEventListener('pointerdown', (e) => {
-    if (nativeShell.hidden || e.button !== 0 || e.offsetY >= nativeVideo.clientHeight - 48) return;
-    pointerGesture = { id: e.pointerId, x: e.clientX, y: e.clientY, time: nativeVideo.currentTime, volume: nativeVideo.volume, mode: null };
-  });
-  nativeVideo.addEventListener('pointermove', (e) => {
-    const g = pointerGesture;
-    if (!g || g.id !== e.pointerId || !(e.buttons & 1)) return;
-    const dx = e.clientX - g.x, dy = e.clientY - g.y;
-    if (!g.mode && Math.max(Math.abs(dx), Math.abs(dy)) > 14) {
-      g.mode = Math.abs(dx) >= Math.abs(dy) ? 'seek' : 'volume';
-      try { nativeVideo.setPointerCapture(e.pointerId); } catch {}
-    }
-    if (g.mode === 'seek' && Number.isFinite(nativeVideo.duration)) {
-      const seconds = Math.round(dx / Math.max(1, nativeVideo.clientWidth) * 120);
-      nativeVideo.currentTime = Math.max(0, Math.min(nativeVideo.duration, g.time + seconds));
-      gestureIndicator.textContent = `${seconds >= 0 ? '+' : ''}${seconds} сек`;
-    } else if (g.mode === 'volume') {
-      nativeVideo.volume = Math.max(0, Math.min(1, g.volume - dy / Math.max(1, nativeVideo.clientHeight)));
-      if (nativeVideo.volume > 0 && nativeVideo.muted) nativeVideo.muted = false;
-      gestureIndicator.textContent = `Громкость ${Math.round(nativeVideo.volume * 100)}%`;
-    }
-    if (g.mode) { gestureIndicator.hidden = false; e.preventDefault(); }
-  });
-  const endPointerGesture = (e) => {
-    if (!pointerGesture || pointerGesture.id !== e.pointerId) return;
-    pointerGesture = null;
-    gestureIndicator.hidden = true;
-    try { if (nativeVideo.hasPointerCapture(e.pointerId)) nativeVideo.releasePointerCapture(e.pointerId); } catch {}
-  };
-  nativeVideo.addEventListener('pointerup', endPointerGesture);
-  nativeVideo.addEventListener('pointercancel', endPointerGesture);
-  nativeVideo.addEventListener('dblclick', (e) => {
-    if (e.offsetY < nativeVideo.clientHeight - 48) { e.preventDefault(); setFs(!fsOn); }
-  });
-  frameWrap.append(nativeShell, nativeTools);
-  // Свой полноэкранный режим — надёжно работает и для Kodik, и для Sibnet
-  let fsOn = false;
-  const fsExit = el('button', { class: 'player-fs-exit', title: 'Выйти из полного экрана (Esc)' }); fsExit.append(ic('fsexit', 18));
-  const setFs = (on) => { fsOn = on; frame.classList.toggle('fs', on); nativeShell.classList.toggle('fs', on); fsExit.classList.toggle('show', on); window.anixart.winSetFullScreen(on); };
-  fsExit.addEventListener('click', () => setFs(false));
-  frame.addEventListener('enter-html-full-screen', () => setFs(true));
-  frame.addEventListener('leave-html-full-screen', () => setFs(false));
-  document.addEventListener('keydown', (e) => {
-    if (!frame.isConnected) return;
-    if (e.key === 'Escape' && fsOn) { setFs(false); return; }
-    if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); returnToRelease(); return; }
-    if (e.key === 'Escape' && state.view === 'player' && !fsOn) { returnToRelease(); return; }
-    if (state.view !== 'player' || nativeShell.hidden || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target && e.target.tagName)) return;
-    if (e.ctrlKey && e.key === 'ArrowLeft') { e.preventDefault(); moveEpisode(-1); return; }
-    if (e.ctrlKey && e.key === 'ArrowRight') { e.preventDefault(); moveEpisode(1); return; }
-    if (e.key === 'ArrowLeft') { e.preventDefault(); if (Number.isFinite(nativeVideo.duration)) nativeVideo.currentTime = Math.max(0, nativeVideo.currentTime - 10); }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); if (Number.isFinite(nativeVideo.duration)) nativeVideo.currentTime = Math.min(nativeVideo.duration, nativeVideo.currentTime + 10); }
-    else if (e.key.toLowerCase() === 'f') setFs(!fsOn);
-    else if (e.code === 'Space') { e.preventDefault(); if (nativeVideo.paused) nativeVideo.play().catch(() => {}); else nativeVideo.pause(); }
-  });
-  frameWrap.append(frame, fsExit);
-  const layout = el('div', { class: 'player-layout' }, frameWrap, epStrip);
-  viewRoot.append(selectors, layout);
-  const resolvedStreams = new Map();
-  const resolverFailures = new Set();
-  state.store.playerPositions = state.store.playerPositions || {};
-  const positionKey = (ep, sourceId) => `${r.id}:${sourceId}:${ep.position}`;
-  function saveNativePosition(force = false) {
-    if (!current || !currentEpisode || nativeShell.hidden || !Number.isFinite(nativeVideo.currentTime)) return;
-    const now = Date.now();
-    if (!force && now - lastNativeHistoryUpdate <= 10000) return;
-    lastNativeHistoryUpdate = now;
-    const position = Math.floor(nativeVideo.currentTime);
-    state.store.playerPositions[positionKey(currentEpisode, current.sId)] = position;
-    window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
-    if (isAuthed()) window.anixart.historyAdd(current.rId, current.sId, position).catch(() => {});
-  }
+  previousEpisodeButton.addEventListener('click', () => moveEpisode(-1));
+  nextEpisodeButton.addEventListener('click', () => moveEpisode(1));
   const autoNext = el('input', { type: 'checkbox', checked: state.store.settings.autoNext !== false, 'aria-label': 'Автоматически включать следующую серию' });
   autoNext.addEventListener('change', async () => {
     state.store.settings.autoNext = autoNext.checked;
     await window.anixart.storeSet({ settings: state.store.settings });
   });
-  const stopPlayer = () => {
-    if (watchTimer) { clearTimeout(watchTimer); watchTimer = null; }
-    current = null; currentEpisode = null;
-    clearExternalSubtitle();
-    frame.src = 'about:blank'; frame.hidden = false;
-    if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
-    resetStreamChoices();
-    nativeVideo.pause(); nativeVideo.removeAttribute('src'); nativeVideo.load();
-    nativeShell.hidden = true; nativeTools.hidden = true;
+  const stopPlayer = () => { current = null; currentEpisode = null; frame.src = 'about:blank'; };
+  const layout = el('div', { class: 'player-layout' }, frameWrap, epStrip);
+  viewRoot.append(selectors, layout);
+  let curType = null, curSource = null;
+  const positionKey = (ep, sourceId) => [r.id, sourceId, ep.position].join(':');
+  const updateEpisodeNavigation = () => {
+    const index = episodeButtons.findIndex((item) => item.ep === currentEpisode);
+    previousEpisodeButton.disabled = index <= 0;
+    nextEpisodeButton.disabled = index < 0 || index >= episodeButtons.length - 1;
   };
-  const playerModeHost = el('span');
-  let playerModeControl = null;
-  const setPlayerSurface = (mode, ep) => {
-    clearExternalSubtitle();
-    frame.hidden = mode !== 'source';
-    nativeShell.hidden = mode !== 'kyu';
-    nativeTools.hidden = mode !== 'kyu' || !nativeCanPlay(ep);
-    nativeMessage.hidden = true;
-    nativeVideo.pause();
-    if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
-    resetStreamChoices();
-    nativeVideo.removeAttribute('src');
-    nativeVideo.load();
-    if (mode === 'source') {
-      frame.src = 'player.html#u=' + encodeURIComponent(ep.url);
-    } else if (mode === 'external') {
-      frame.src = 'about:blank';
-      nativeShell.hidden = false;
-      nativeTools.hidden = true;
-      nativeMessage.hidden = false;
-      nativeMessage.textContent = 'Источник открыт во внешнем браузере. Вернись в Kyu, чтобы выбрать другую серию.';
-      window.anixart.openExternal(ep.url);
-    } else if (!nativeCanPlay(ep)) {
-      frame.src = 'about:blank';
-      nativeShell.hidden = false;
-      showNativeMessage('Для этого источника встроенный поток недоступен.', true);
-    } else {
-      frame.src = 'about:blank';
-      const resolved = resolvedStreams.get(ep.url);
-      if (!resolved && isKyuResolvable(ep)) {
-        nativeMessage.hidden = false;
-        nativeMessage.textContent = 'Ищу прямую ссылку источника…';
-        window.anixart.resolvePlayer(ep.url).then((result) => {
-          if (currentEpisode !== ep || (state.store.settings.playerMode || 'source') !== 'kyu') return;
-          const streams = result && result.streams && result.streams.filter((stream) => stream && stream.url);
-          if (!streams || !streams.length) {
-            resolverFailures.add(ep.url);
-            showNativeMessage((result && result.error) || 'Не удалось разобрать ссылку этого источника.', true);
-            updatePlayerModeControl(ep);
-            return;
-          }
-          streams.sort((a, b) => Number((b.quality || '').match(/\d+/)?.[0] || 0) - Number((a.quality || '').match(/\d+/)?.[0] || 0));
-          resolvedStreams.set(ep.url, streams);
-          resolverFailures.delete(ep.url);
-          setProviderQualityOptions(streams);
-          updatePlayerModeControl(ep);
-          nativeMessage.hidden = true;
-          playKyuStream(streams[0].url);
-        }).catch(() => {
-          if (currentEpisode !== ep) return;
-          resolverFailures.add(ep.url);
-          showNativeMessage('Ошибка разбора ссылки источника.', true);
-          updatePlayerModeControl(ep);
-        });
-      } else if (resolved) {
-        setProviderQualityOptions(resolved);
-        playKyuStream(resolved[0].url);
-      } else playKyuStream(ep.url);
-    }
-  };
-  const playKyuStream = (url, resumeAt = 0) => {
-      nativeMessage.hidden = true;
-      if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
-      for (const select of [qualitySelect, audioSelect, subtitleSelect]) { select.innerHTML = ''; showStreamChoice(select, false); }
-      nativeVideo.pause(); nativeVideo.removeAttribute('src'); nativeVideo.load();
-      if (isHlsUrl(url)) setupHlsStream(url, resumeAt);
-      else {
-        nativeVideo.src = url;
-        nativeVideo.playbackRate = Number(speedSelect.value) || 1;
-        if (resumeAt > 0) nativeVideo.addEventListener('loadedmetadata', () => { if (Number.isFinite(nativeVideo.duration) && resumeAt < nativeVideo.duration) nativeVideo.currentTime = resumeAt; }, { once: true });
-        nativeVideo.play().catch(() => {});
-      }
-  };
-  const setProviderQualityOptions = (streams) => {
-    providerQualitySelect.innerHTML = '';
-    streams.forEach((stream, index) => providerQualitySelect.append(el('option', { value: String(index) }, stream.quality || `Вариант ${index + 1}`)));
-    showStreamChoice(providerQualitySelect, streams.length > 1);
-  };
-  providerQualitySelect.addEventListener('change', () => {
-    const streams = currentEpisode && resolvedStreams.get(currentEpisode.url);
-    const stream = streams && streams[Number(providerQualitySelect.value)];
-    if (stream) playKyuStream(stream.url, nativeVideo.currentTime || 0);
-  });
-  const isHlsUrl = (url) => { try { return /\.m3u8$/i.test(new URL(url).pathname); } catch { return false; } };
-  const isKyuResolvable = (ep) => { try { return ['video.sibnet.ru', 'myvi.top', 'www.myvi.top', 'secvideo1.online', 'csst.online', 'sstrge.online', 'sovetromantica.com', 'rutube.ru', 'www.rutube.ru', 'ok.ru', 'm.ok.ru', 'anilibria.tv', 'new.anilib.one', 'anixart.libria.fun', 'anilibria.top', 'studiomir.club', 'api.studiomir.club', 'my.mail.ru', 'vk.com', 'vkvideo.ru'].includes(new URL(ep.url).hostname); } catch { return false; } };
-  const nativeCanPlay = (ep) => {
-    if (!ep || typeof ep.url !== 'string') return false;
-    try {
-      const url = new URL(ep.url);
-      if (!/^https?:$/.test(url.protocol)) return false;
-      if (resolvedStreams.has(ep.url)) return true;
-      if (resolverFailures.has(ep.url)) return false;
-      if (isKyuResolvable(ep)) return true;
-      if (ep.iframe === true) return false;
-      if (/\.m3u8$/i.test(url.pathname)) return !!(window.Hls && window.Hls.isSupported());
-      return /\.(mp4|m4v|webm|ogv|ogg)$/i.test(url.pathname) && !!nativeVideo.canPlayType(url.pathname.match(/\.(mp4|m4v)$/i) ? 'video/mp4' : url.pathname.match(/\.webm$/i) ? 'video/webm' : 'video/ogg');
-    } catch { return false; }
-  };
-  const updatePlayerModeControl = (ep) => {
-    const mode = state.store.settings.playerMode || 'source';
-    const options = [
-      { value: 'source', label: 'Плеер источника' },
-      { value: 'kyu', label: nativeCanPlay(ep) ? 'Встроенный плеер Kyu' : 'Встроенный Kyu · прямой поток недоступен' },
-      { value: 'external', label: 'Внешний браузер' },
-    ];
-    playerModeHost.innerHTML = '';
-    playerModeControl = ddSelect(options, mode, async (value) => {
-      state.store.settings.playerMode = value;
-      await window.anixart.storeSet({ settings: state.store.settings });
-      if (currentEpisode) setPlayerSurface(value, currentEpisode);
-    });
-    playerModeHost.append(playerModeControl);
-  };
-  // Отрисовка кнопки серии + крестик «снять отметку просмотра»
-  function paintEp(b, ep) {
-    b.classList.toggle('watched', !!ep.is_watched);
-    b.innerHTML = '';
-    b.append(el('span', { class: 'ep-label' }, (ep.is_watched ? '✓ ' : '') + (ep.name || ('Серия ' + ep.position))));
+  function paintEp(button, ep) {
+    button.classList.toggle('watched', !!ep.is_watched);
+    button.innerHTML = '';
+    button.append(el('span', { class: 'ep-label' }, (ep.is_watched ? '✓ ' : '') + (ep.name || ('Серия ' + ep.position))));
     if (isAuthed() && ep.is_watched) {
-      const x = el('span', { class: 'ep-unwatch', title: 'Снять отметку «просмотрено»' }, '✕');
-      x.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        ep.is_watched = false;
-        paintEp(b, ep);
-        await window.anixart.episodeUnwatch(r.id, b._sid, ep.position).catch(() => {});
+      const remove = el('span', { class: 'ep-unwatch', title: 'Снять отметку «просмотрено»' }, '✕');
+      remove.addEventListener('click', async (event) => {
+        event.stopPropagation(); ep.is_watched = false; paintEp(button, ep);
+        await window.anixart.episodeUnwatch(r.id, curSource, ep.position).catch(() => {});
       });
-      b.append(x);
+      button.append(remove);
     }
   }
-  const playEpisode = (ep, sourceId, btn) => {
-    current = { rId: r.id, sId: sourceId, position: ep.position };
-    currentEpisode = ep;
-    const episodeIndex = episodeButtons.findIndex((item) => item.ep === ep);
-    previousEpisodeButton.disabled = episodeIndex <= 0;
-    nextEpisodeButton.disabled = episodeIndex < 0 || episodeIndex >= episodeButtons.length - 1;
-    lastNativeHistoryUpdate = 0;
-    const mode = state.store.settings.playerMode || 'source';
-    updatePlayerModeControl(ep);
-    setPlayerSurface(mode, ep);
-    if (isAuthed()) window.anixart.historyAdd(r.id, sourceId, 0).catch(() => {});
-    if (watchTimer) { clearTimeout(watchTimer); watchTimer = null; }
-    // отмечаем просмотренной только после ~60 c просмотра, а не по клику
-    if (isAuthed() && !ep.is_watched) {
-      watchTimer = setTimeout(() => {
-        window.anixart.episodeWatch(r.id, sourceId, ep.position).catch(() => {});
-        ep.is_watched = true;
-        if (btn) paintEp(btn, ep);
-      }, 60000);
-    }
+  const playEpisode = (ep) => {
+    current = { rId: r.id, sId: curSource };
+    currentEpisode = ep; watchMarkedEpisode = null; lastSourceTime = null; lastSourceDuration = null;
+    updateEpisodeNavigation();
+    frame.src = 'player.html#u=' + encodeURIComponent(ep.url);
+    if (isAuthed()) window.anixart.historyAdd(r.id, curSource, 0).catch(() => {});
   };
-  nativeVideo.addEventListener('timeupdate', () => {
-    saveNativePosition();
-  });
-  nativeVideo.addEventListener('loadedmetadata', () => {
-    if (!current || !currentEpisode || !nativeCanPlay(currentEpisode)) return;
-    const saved = Number(state.store.playerPositions[positionKey(currentEpisode, current.sId)]);
-    if (saved > 10 && saved < nativeVideo.duration - 10 && confirm(`Продолжить с ${Math.floor(saved / 60)}:${String(saved % 60).padStart(2, '0')}?`)) nativeVideo.currentTime = saved;
-  });
-  nativeVideo.addEventListener('error', () => {
-    if ((state.store.settings.playerMode || 'source') !== 'kyu' || nativeShell.hidden || hlsPlayer) return;
-    const code = nativeVideo.error && nativeVideo.error.code;
-    const reason = code === 2 ? 'ошибка сети' : code === 3 ? 'ошибка декодирования' : code === 4 ? 'формат или ссылка не поддерживаются' : 'ошибка воспроизведения';
-    showNativeMessage(`Kyu не смог воспроизвести прямой поток: ${reason}.`, true);
-  });
-  nativeVideo.addEventListener('ended', () => {
-    if (current && currentEpisode) {
+  const markEpisodeWatchedAfterProgress = (seconds) => {
+    if (!isAuthed() || !currentEpisode || currentEpisode.is_watched || seconds < 60 || watchMarkedEpisode === currentEpisode) return;
+    watchMarkedEpisode = currentEpisode;
+    const item = episodeButtons.find((entry) => entry.ep === currentEpisode);
+    window.anixart.episodeWatch(r.id, curSource, currentEpisode.position).catch(() => {});
+    currentEpisode.is_watched = true;
+    if (item) paintEp(item.button, currentEpisode);
+  };
+  frame.addEventListener('ipc-message', (event) => {
+    if (event.channel !== 'kodik' || !current) return;
+    const data = event.args && event.args[0]; if (!data) return;
+    if (typeof data.time === 'number') lastSourceTime = data.time;
+    if (typeof data.duration === 'number') lastSourceDuration = data.duration;
+    if (typeof data.time === 'number') {
+      markEpisodeWatchedAfterProgress(data.time);
+      state.store.playerPositions[positionKey(currentEpisode, current.sId)] = Math.floor(data.time);
+      window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
+      if (isAuthed()) window.anixart.historyAdd(current.rId, current.sId, Math.floor(data.time)).catch(() => {});
+    }
+    const nearEnd = Number.isFinite(lastSourceTime) && Number.isFinite(lastSourceDuration) && lastSourceDuration >= 60 && lastSourceTime >= 30 && lastSourceTime >= lastSourceDuration - Math.max(20, Math.min(45, lastSourceDuration * 0.08));
+    if (data.ended && currentEpisode && nearEnd) {
       delete state.store.playerPositions[positionKey(currentEpisode, current.sId)];
       window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
-    }
-    const index = episodeButtons.findIndex((item) => item.ep === currentEpisode);
-    if (autoNext.checked && index >= 0 && episodeButtons[index + 1]) episodeButtons[index + 1].button.click();
-  });
-  frame.addEventListener('ipc-message', (e) => {
-    if (e.channel !== 'kodik' || !current) return;
-    const d = e.args && e.args[0]; if (!d) return;
-    if (d.ended && currentEpisode) {
-      delete state.store.playerPositions[positionKey(currentEpisode, current.sId)];
-      window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
-      const index = episodeButtons.findIndex((item) => item.ep === currentEpisode);
-      if (autoNext.checked && index >= 0 && episodeButtons[index + 1]) episodeButtons[index + 1].button.click();
-    } else if (typeof d.time === 'number' && currentEpisode) {
-      state.store.playerPositions[positionKey(currentEpisode, current.sId)] = Math.floor(d.time);
-      window.anixart.storeSet({ playerPositions: state.store.playerPositions }).catch(() => {});
-      if (isAuthed()) window.anixart.historyAdd(current.rId, current.sId, Math.floor(d.time)).catch(() => {});
+      const index = episodeButtons.findIndex((entry) => entry.ep === currentEpisode);
+      if (autoNext.checked && episodeButtons[index + 1]) episodeButtons[index + 1].button.click();
     }
   });
-  selectors.append(spinner());
-  const typesRes = await window.anixart.episodeTypes(r.id);
-  selectors.innerHTML = '';
-  const types = typesRes.types || [];
-  if (!types.length) { selectors.append(msg('Нет доступных озвучек для этого релиза.')); return; }
-  let curType = types[0].id, curSource = null;
-  const typeDd = ddSelect(types.map((t) => ({ value: t.id, label: `${t.name}${t.is_sub ? ' (суб)' : ''} · ${t.episodes_count} эп.` })), curType, (v) => { curType = Number(v); loadSources(); });
+  selectors.append(el('label', {}, 'Озвучка:'), el('span', {}, 'загрузка…'), el('label', {}, 'Источник:'));
   const sourceHost = el('span');
-  selectors.append(el('label', {}, 'Озвучка:'), typeDd, el('label', {}, 'Источник:'), sourceHost, el('label', {}, 'Плеер:'), playerModeHost, el('label', { class: 'player-autonext' }, autoNext, ' Следующая серия'), iconBtn('btn secondary player-fs-enter', 'fs', 'На весь экран', () => setFs(true)));
-  const loadSources = async () => {
-    stopPlayer(); sourceHost.innerHTML = ''; sourceHost.append(el('span', { class: 'muted' }, 'загрузка…')); epStrip.innerHTML = '';
-    const sres = await window.anixart.episodeSources(r.id, curType);
-    const sources = (sres.sources || []).filter((s) => s.episodes_count > 0);
-    sourceHost.innerHTML = '';
-    if (!sources.length) { sourceHost.append(el('span', { class: 'muted' }, 'нет источников')); epStrip.append(msg('У этой озвучки нет серий.')); return; }
-    curSource = sources[0].id;
-    sourceHost.append(ddSelect(sources.map((s) => ({ value: s.id, label: `${s.name} · ${s.episodes_count} эп.` })), curSource, (v) => { curSource = Number(v); loadEpisodes(); }));
-    await loadEpisodes();
-  };
+  selectors.append(sourceHost, el('label', { class: 'player-autonext' }, autoNext, ' Следующая серия'), iconBtn('btn secondary player-fs-enter', 'fs', 'На весь экран', () => setFs(true)), previousEpisodeButton, nextEpisodeButton);
+  document.addEventListener('keydown', (event) => {
+    if (!frame.isConnected) return;
+    if (event.key === 'Escape' && fsOn) { setFs(false); return; }
+    if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); returnToRelease(); return; }
+    if (event.key === 'Escape' && state.view === 'player' && !fsOn) { returnToRelease(); }
+    if (state.view === 'player' && event.ctrlKey && event.key === 'ArrowLeft') { event.preventDefault(); moveEpisode(-1); }
+    if (state.view === 'player' && event.ctrlKey && event.key === 'ArrowRight') { event.preventDefault(); moveEpisode(1); }
+  });
   const loadEpisodes = async () => {
     stopPlayer(); epStrip.innerHTML = ''; epStrip.append(spinner());
-    const eres = await window.anixart.episodes(r.id, curType, curSource);
+    const result = await window.anixart.episodes(r.id, curType, curSource);
     epStrip.innerHTML = '';
-    const eps = eres.episodes || [];
-    if (!eps.length) { epStrip.append(msg('Серии не найдены.')); return; }
-    let resumeIdx = 0;
-    if (eps.some((e) => e.is_watched)) { const u = eps.findIndex((e) => !e.is_watched); resumeIdx = u === -1 ? eps.length - 1 : u; }
+    const episodes = result.episodes || [];
+    if (!episodes.length) {
+      const details = result._error || (result._status ? 'HTTP ' + result._status : result.code && result.code !== 0 ? 'код API ' + result.code : '');
+      epStrip.append(msg(details ? 'Не удалось загрузить серии (' + details + ').' : 'Серии не найдены.'));
+      return;
+    }
+    let resumeIndex = 0;
+    if (episodes.some((episode) => episode.is_watched)) { const unwatched = episodes.findIndex((episode) => !episode.is_watched); resumeIndex = unwatched === -1 ? episodes.length - 1 : unwatched; }
     episodeButtons = [];
-    previousEpisodeButton.disabled = true; nextEpisodeButton.disabled = true;
-    eps.forEach((ep, i) => {
-      const b = el('button', { class: 'ep-btn' });
-      b._sid = curSource;
-      episodeButtons.push({ ep, button: b });
-      paintEp(b, ep);
-      b.addEventListener('click', () => { epStrip.querySelectorAll('.ep-btn').forEach((x) => x.classList.remove('active')); b.classList.add('active'); playEpisode(ep, curSource, b); });
-      epStrip.append(b);
-      if (i === resumeIdx) { b.classList.add('active'); playEpisode(ep, curSource, b); }
+    episodes.forEach((episode, index) => {
+      const button = el('button', { class: 'ep-btn' });
+      episodeButtons.push({ ep: episode, button });
+      paintEp(button, episode);
+      button.addEventListener('click', () => {
+        epStrip.querySelectorAll('.ep-btn').forEach((item) => item.classList.remove('active'));
+        button.classList.add('active'); playEpisode(episode);
+      });
+      epStrip.append(button);
+      if (index === resumeIndex) { button.classList.add('active'); playEpisode(episode); }
     });
   };
+  const loadSources = async () => {
+    stopPlayer(); sourceHost.innerHTML = ''; sourceHost.append(el('span', { class: 'muted' }, 'загрузка…')); epStrip.innerHTML = '';
+    const result = await window.anixart.episodeSources(r.id, curType);
+    const sources = (result.sources || []).filter((source) => source.episodes_count > 0 && /kodik|sibnet/i.test(source.name || ''));
+    sourceHost.innerHTML = '';
+    if (!sources.length) {
+      sourceHost.append(el('span', { class: 'muted' }, 'нет Kodik или Sibnet'));
+      epStrip.append(msg('Для этой озвучки сейчас нет доступного источника Kodik или Sibnet.'));
+      return;
+    }
+    curSource = sources[0].id;
+    sourceHost.append(ddSelect(sources.map((source) => ({ value: source.id, label: source.name + ' · ' + source.episodes_count + ' эп.' })), curSource, (value) => { curSource = Number(value); loadEpisodes(); }));
+    await loadEpisodes();
+  };
+  const typesResult = await window.anixart.episodeTypes(r.id);
+  selectors.children[1].textContent = '';
+  const types = typesResult.types || [];
+  if (!types.length) { selectors.append(msg('Нет доступных озвучек для этого релиза.')); return; }
+  curType = types[0].id;
+  const typeSelect = ddSelect(types.map((type) => ({ value: type.id, label: type.name + (type.is_sub ? ' (суб)' : '') + ' · ' + type.episodes_count + ' эп.' })), curType, (value) => { curType = Number(value); loadSources(); });
+  selectors.children[1].replaceWith(typeSelect);
   await loadSources();
 }
 
@@ -1576,7 +1325,7 @@ window.__test = { openRelease, setView };
 (async function init() {
   try {
     const s = await window.anixart.storeGet();
-    if (s && typeof s === 'object') { state.store = Object.assign(state.store, s); state.store.playerPositions = s.playerPositions || {}; state.store.settings = Object.assign({ token: '', adblock: true, playerMode: 'source', playerSpeed: 1, playerResize: 'contain', autoNext: true }, s.settings || {}); }
+    if (s && typeof s === 'object') { state.store = Object.assign(state.store, s); state.store.playerPositions = s.playerPositions || {}; state.store.settings = Object.assign({ token: '', adblock: true, autoNext: true }, s.settings || {}); }
     const me = await window.anixart.me();
     state.auth = { token: (me && me.token) || '', profile: (me && me.profile) || null };
   } catch {}

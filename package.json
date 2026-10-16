@@ -1,6 +1,6 @@
 {
   "name": "anixart-desktop",
-  "version": "1.0.5",
+  "version": "2.0.0",
   "description": "Десктоп-клиент для просмотра аниме на основе AniXart API",
   "main": "main.js",
   "scripts": {
@@ -20,12 +20,15 @@
     "files": [
       "main.js",
       "preload.js",
-      "src/**/*"
+      "src/**/*",
+      "!src/vendor/hls.min.js",
+      "!src/vendor/hls.LICENSE"
     ],
     "win": {
       "target": [
         "nsis",
-        "zip"
+        "zip",
+        "portable"
       ],
       "icon": "build/icon.png"
     },
@@ -40,5 +43,9 @@
       "artifactName": "Kyu-${version}-portable.exe"
     },
     "compression": "maximum"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lantana2/Kyu.git"
   }
 }

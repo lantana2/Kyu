@@ -11,9 +11,6 @@ contextBridge.exposeInMainWorld('anixart', {
   episodeTypes: (id) => ipcRenderer.invoke('api:episodeTypes', { id }),
   episodeSources: (id, typeId) => ipcRenderer.invoke('api:episodeSources', { id, typeId }),
   episodes: (id, typeId, sourceId) => ipcRenderer.invoke('api:episodes', { id, typeId, sourceId }),
-  resolvePlayer: (url) => ipcRenderer.invoke('player:resolve', { url }),
-  selectSubtitleFile: () => ipcRenderer.invoke('player:selectSubtitle'),
-
   // Аккаунт
   signIn: (login, password) => ipcRenderer.invoke('auth:signIn', { login, password }),
   logout: () => ipcRenderer.invoke('auth:logout'),
@@ -38,6 +35,7 @@ contextBridge.exposeInMainWorld('anixart', {
   // Обзор
   discoverInteresting: () => ipcRenderer.invoke('api:discoverInteresting'),
   discoverWatching: (page) => ipcRenderer.invoke('api:discoverWatching', { page }),
+  discoverRecommendations: (page, previousPage) => ipcRenderer.invoke('api:discoverRecommendations', { page, previousPage }),
 
   // Оценка
   voteAdd: (id, vote) => ipcRenderer.invoke('api:voteAdd', { id, vote }),
