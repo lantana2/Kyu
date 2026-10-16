@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+        content="default-src 'self'; img-src 'self' https: data:; media-src 'self' https: blob:; connect-src 'self' https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
   <title>Kyu</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -74,6 +74,7 @@
     </div>
   </div>
 
+  <script src="vendor/hls.min.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
