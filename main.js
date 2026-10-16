@@ -11,13 +11,13 @@ const USER_AGENT =
 const DATA_DIR = path.join(app.getPath('userData'), 'data');
 const STORE_FILE = path.join(DATA_DIR, 'store.json');
 
-const DEFAULT_STORE = { favorites: [], history: [], settings: { token: '' }, profile: null };
+const DEFAULT_STORE = { favorites: [], history: [], settings: { token: '', adblock: true }, profile: null };
 
 let store = DEFAULT_STORE;
 function loadStore() {
   try {
     store = Object.assign({}, DEFAULT_STORE, JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')));
-    store.settings = Object.assign({ token: '' }, store.settings || {});
+    store.settings = Object.assign({ token: '', adblock: true }, store.settings || {});
   } catch {
     store = JSON.parse(JSON.stringify(DEFAULT_STORE));
   }
@@ -138,6 +138,28 @@ function registerIpc() {
   // — Друзья —
   ipcMain.handle('api:friends', (_e, { id, page }) => apiRequest(`/profile/friend/all/${id}/${page}`));
   ipcMain.handle('api:friendRecs', () => apiRequest(`/profile/friend/recommendations`));
+  ipcMain.handle('api:friendRequestsIn', (_e, { page }) => apiRequest(`/profile/friend/requests/in/${page}`));
+  ipcMain.handle('api:friendRequestsOut', (_e, { page }) => apiRequest(`/profile/friend/requests/out/${page}`));
+  ipcMain.handle('api:friendRequestSend', (_e, { id }) => apiRequest(`/profile/friend/request/send/${id}`));
+  ipcMain.handle('api:friendRequestRemove', (_e, { id }) => apiRequest(`/profile/friend/request/remove/${id}`));
+  ipcMain.handle('api:friendRequestHide', (_e, { id }) => apiRequest(`/profile/friend/request/hide/${id}`));
+  ipcMain.handle('api:friendDelete', (_e, { id }) => apiRequest(`/friend/delete/${id}`));
+  ipcMain.handle('api:blockList', (_e, { page }) => apiRequest(`/blocklist/all/${page}`));
+  ipcMain.handle('api:blockAdd', (_e, { id }) => apiRequest(`/blocklist/add/${id}`));
+  ipcMain.handle('api:blockRemove', (_e, { id }) => apiRequest(`/blocklist/remove/${id}`));
+  ipcMain.handle('api:notifications', (_e, { page }) => apiRequest(`/notification/all/${page}`));
+  ipcMain.handle('api:notificationCategory', (_e, { category, page }) => {
+    const allowed = new Set(['articles', 'episodes', 'friends', 'releaseComments', 'article/comments', 'related/release', 'release/all']);
+    return allowed.has(category) ? apiRequest(`/notification/${category}/${page}`) : { code: -1, _error: 'Unsupported notification category' };
+  });
+  ipcMain.handle('api:notificationRead', () => apiRequest(`/notification/read`));
+  ipcMain.handle('api:releaseNotifications', (_e, { page }) => apiRequest(`/notification/release/all/${page}`));
+  ipcMain.handle('api:latest', (_e, { page }) => apiRequest(`/latest/all/${page}`));
+  ipcMain.handle('api:releaseUpdates', (_e, { id, page }) => apiRequest(`/updates/${id}/${page}`));
+  ipcMain.handle('api:videoReleaseInfo', (_e, { id }) => apiRequest(`/video/release/${id}`));
+  ipcMain.handle('api:videoRelease', (_e, { id, page }) => apiRequest(`/video/release/${id}/${page}`));
+  ipcMain.handle('api:videoReleaseCategory', (_e, { id, categoryId, page }) => apiRequest(`/video/release/${id}/category/${categoryId}/${page}`));
+  ipcMain.handle('api:videoCategories', () => apiRequest(`/video/release/categories`));
   ipcMain.handle('api:randomFromList', (_e, { pid, status }) => apiRequest(`/release/random/profile/list/${pid}/${status}`));
 
   // — Настройки аккаунта —
@@ -156,11 +178,13 @@ function registerIpc() {
   ipcMain.handle('api:channelRecs', (_e, { page }) => apiRequest(`/channel/recommendations/${page}`));
   ipcMain.handle('api:channel', (_e, { id }) => apiRequest(`/channel/${id}`));
   ipcMain.handle('api:channelArticles', (_e, { id, page }) => apiRequest(`/channel/${id}/article/all/${page}`));
+  ipcMain.handle('api:channelSubscribers', (_e, { id, page }) => apiRequest(`/channel/${id}/subscribers/${page}`));
   ipcMain.handle('api:channelSubscribe', (_e, { id, on }) => apiRequest(`/channel/${on ? 'subscribe' : 'unsubscribe'}/${id}`));
   ipcMain.handle('api:feed', (_e, { page }) => apiRequest(`/article/all/${page}`, { method: 'POST', body: {} }));
 
   // — Комментарии статей —
   ipcMain.handle('api:articleComments', (_e, { id, page }) => apiRequest(`/article/comment/all/${id}/${page}`));
+  ipcMain.handle('api:articleReposts', (_e, { id, page }) => apiRequest(`/article/reposts/${id}/${page}`));
   // — Ред./удаление своих комментариев релиза —
   ipcMain.handle('api:commentEdit', (_e, { id, message, spoiler }) => apiRequest(`/release/comment/edit/${id}`, { method: 'POST', body: { message, spoiler: !!spoiler } }));
   ipcMain.handle('api:commentDelete', (_e, { id }) => apiRequest(`/release/comment/delete/${id}`));
@@ -231,7 +255,7 @@ function createWindow() {
 
 // Рекламные сети (preroll/VAST в плеерах kodik/sibnet и т.п.)
 const AD_HOSTS = [
-  'yandex.ru', 'yandex.net', 'yastatic.net', 'webvisor.org', 'yandexadexchange.net',
+  'yandex.ru', 'yandex.net', 'yandex.com', 'yastatic.net', 'webvisor.org', 'yandexadexchange.net', 'yandexadexchange.com',
   'an.yandex.ru', 'yabs.yandex', 'bs.yandex', 'awaps.yandex', 'adfox.ru', 'ads.adfox.ru', 'adfox.net',
   'adriver.ru', 'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
   'imasdk.googleapis.com', 'pagead2.googlesyndication.com', 'ad.mail.ru', 'rs.mail.ru',
@@ -241,11 +265,17 @@ const AD_HOSTS = [
   'outbrain.com', 'moatads.com', 'adsafeprotected.com', 'relap.io', 'hybrid.ai',
   'adloox.com', 'luckyads', 'adspire', 'vidoomy', 'aniview.com', 'springserve.com',
   'rtb.com', 'adnxs.com', 'rubiconproject.com', 'pubmatic.com', 'openx.net', 'innovid.com',
+  'serving-sys.ru', 'bs.serving-sys.ru', 'ad.mail.ru', 'adsrvr.org', 'adform.net',
 ];
+const AD_URL_MARKERS = /(?:^|[/?&=._-])(?:vast|vpaid|preroll|pre-roll|instream|adfox|adserver|adservice|adsystem|yandexad|doubleclick|adnxs|advertising|impression)(?:$|[/?&=._-])/i;
+const AD_HOST_LABEL = /(?:^|[.-])(?:ads?|adserver|adfox|advert|advertising|vast|vpaid|prebid|tracker|tracking|impression)(?:[.-]|$)/i;
 function isAdUrl(url) {
-  let host = '';
-  try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
-  return AD_HOSTS.some((d) => host === d || host.endsWith('.' + d) || host.includes(d));
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  const host = parsed.hostname.toLowerCase();
+  if (AD_HOSTS.some((d) => host === d || host.endsWith('.' + d))) return true;
+  if (AD_HOST_LABEL.test(host)) return true;
+  return AD_URL_MARKERS.test(parsed.pathname + parsed.search);
 }
 
 app.whenReady().then(() => {

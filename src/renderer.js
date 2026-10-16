@@ -9,6 +9,13 @@ const state = {
   search: { page: 0, query: '', items: [] },
   discover: { banners: [], watching: [] },
   bm: { tab: 1, page: 0, col: null },
+  updatesPage: 0,
+  releaseUpdatesPage: 0,
+  releaseVideoPage: 0,
+  releaseVideoCategory: 0,
+  socialTab: 'incoming',
+  socialPage: 0,
+  notificationTab: 'all',
   profileTab: 'stats',
 };
 const isAuthed = () => !!state.auth.token;
@@ -69,7 +76,7 @@ const el = (tag, props = {}, ...children) => {
 const viewRoot = $('#viewRoot');
 const viewTitle = $('#viewTitle');
 const topbarControls = $('#topbarControls');
-const VIEW_TITLES = { discover: 'Обзор', catalog: 'Каталог', search: 'Поиск', bookmarks: 'Закладки', feed: 'Лента', profile: 'Профиль', settings: 'Настройки', player: 'Просмотр' };
+const VIEW_TITLES = { discover: 'Обзор', catalog: 'Каталог', search: 'Поиск', bookmarks: 'Закладки', feed: 'Лента', updates: 'Обновления', social: 'Социальное', profile: 'Профиль', settings: 'Настройки', player: 'Просмотр' };
 
 // ── SVG-иконки (без виндовых эмодзи) ────────────────────────────────────────────
 const ICONS = {
@@ -101,6 +108,8 @@ const ICONS = {
   winclose: '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
   fs: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>',
   fsexit: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+  shield: '<path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/><path d="m9 12 2 2 4-4"/>',
 };
 function ic(name, size = 18) { const s = el('span', { class: 'ic' }); s.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`; return s; }
 function iconBtn(cls, name, text, on) { const b = el('button', { class: cls }, ic(name, 17), text ? el('span', {}, text) : ''); if (on) b.addEventListener('click', on); return b; }
@@ -165,7 +174,7 @@ function makePager(page, onPrev, onNext) {
 const sectionTitle = (text, icon) => el('div', { class: 'section-title' }, el('span', { class: 'accent-bar' }), icon ? ic(icon, 18) : '', text);
 
 // ── Навигация ────────────────────────────────────────────────────────────────
-const VIEWS = { discover: renderDiscover, catalog: renderCatalog, search: renderSearch, bookmarks: renderBookmarks, feed: renderFeed, profile: renderProfile, settings: renderSettings };
+const VIEWS = { discover: renderDiscover, catalog: renderCatalog, search: renderSearch, bookmarks: renderBookmarks, feed: renderFeed, updates: renderUpdates, social: renderSocial, profile: renderProfile, settings: renderSettings };
 function setView(view) {
   if (view !== 'profile') state.otherProfileId = null;
   state.view = view;
@@ -314,6 +323,154 @@ async function renderFeed() {
   ((recs && recs.content) || []).forEach((c) => list.append(channelRow(c)));
   viewRoot.append(list);
 }
+function apiItems(res) {
+  if (Array.isArray(res)) return res;
+  if (!res || typeof res !== 'object') return [];
+  for (const key of ['content', 'items', 'notifications', 'releases', 'profiles']) {
+    if (Array.isArray(res[key])) return res[key];
+  }
+  return [];
+}
+function renderUpdateItem(item) {
+  const release = item.release || item.anime || (item.data && item.data.release) || item;
+  const id = Number(release.id || item.release_id || item.anime_id || item.id);
+  const ep = item.episode || item.episode_data || {};
+  const details = [ep.name || item.episode_name || item.name, item.source && item.source.name, item.translation && item.translation.name]
+    .filter((x) => typeof x === 'string' && x.trim());
+  const row = el('div', { class: 'update-row' + (id ? ' clickable' : ''), onclick: id ? () => openRelease(id) : null },
+    el('img', { class: 'update-poster', src: release.image || item.image || '', loading: 'lazy', alt: '' }),
+    el('div', { class: 'update-info' },
+      el('div', { class: 'update-title' }, releaseTitle(release)),
+      el('div', { class: 'muted' }, details.join(' · ') || (item.description || item.title || 'Новое обновление')),
+      el('div', { class: 'comment-date' }, fmtDate(item.creation_date || item.created_at || item.timestamp))));
+  if (id) row.title = 'Открыть карточку релиза';
+  return row;
+}
+async function renderUpdates() {
+  viewRoot.innerHTML = ''; viewRoot.append(spinner());
+  const page = state.updatesPage;
+  const res = await window.anixart.latest(page);
+  if (state.view !== 'updates') return;
+  viewRoot.innerHTML = '';
+  if (res && (res._error || res._empty || (res.code && res.code !== 0))) {
+    viewRoot.append(msg('Не удалось загрузить обновления AniXart. Проверьте соединение и попробуйте ещё раз.'));
+  } else {
+    const items = apiItems(res);
+    if (!items.length) viewRoot.append(msg('Обновлений пока нет.'));
+    else { const list = el('div', { class: 'updates-list' }); items.forEach((item) => list.append(renderUpdateItem(item))); viewRoot.append(list); }
+  }
+  viewRoot.append(makePager(page, () => { state.updatesPage = Math.max(0, page - 1); renderUpdates(); }, () => { state.updatesPage = page + 1; renderUpdates(); }));
+}
+const socialTabs = [
+  { key: 'incoming', label: 'Входящие запросы', icon: 'friends' },
+  { key: 'outgoing', label: 'Исходящие', icon: 'repost' },
+  { key: 'blocked', label: 'Чёрный список', icon: 'shield' },
+  { key: 'notifications', label: 'Уведомления', icon: 'bell' },
+];
+const notificationTabs = [
+  { key: 'all', label: 'Все', category: null },
+  { key: 'friends', label: 'Друзья', category: 'friends' },
+  { key: 'episodes', label: 'Серии', category: 'episodes' },
+  { key: 'articles', label: 'Статьи', category: 'articles' },
+  { key: 'comments', label: 'Комм. релизов', category: 'releaseComments' },
+  { key: 'article-comments', label: 'Комм. статей', category: 'article/comments' },
+  { key: 'release', label: 'У релизов', category: 'release/all' },
+  { key: 'related', label: 'Похожие релизы', category: 'related/release' },
+];
+function socialTarget(item) {
+  const profile = item.profile || item.user || item.friend || item.sender || item.author || item;
+  const id = Number(profile.id || item.profile_id || item.friend_id || item.sender_id || item.user_id || item.id);
+  return { profile, id };
+}
+function renderSocialPerson(item, action) {
+  const { profile, id } = socialTarget(item);
+  const row = el('div', { class: 'social-item' },
+    el('img', { class: 'friend-av', src: avatarUrl(profile) || '', alt: '', onclick: id ? () => openProfile(id) : null }),
+    el('div', { class: 'social-person' },
+      el('div', { class: 'friend-name link', onclick: id ? () => openProfile(id) : null }, profile.login || profile.name || ('ID ' + id)),
+      el('div', { class: 'muted' }, profile.status || '')));
+  for (const currentAction of (Array.isArray(action) ? action : action ? [action] : [])) {
+    if (!id) continue;
+    const btn = el('button', { class: 'btn secondary' }, currentAction.label);
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation(); btn.disabled = true;
+      try { await currentAction.run(id); renderSocial(); } catch { btn.disabled = false; alert('Не удалось выполнить действие.'); }
+    });
+    row.append(btn);
+  }
+  return row;
+}
+function renderNotification(item) {
+  const profile = item.profile || item.author || item.user || {};
+  const release = item.release || item.related_release || {};
+  const title = item.title || item.name || item.type_name || item.message || item.text || 'Уведомление AniXart';
+  const row = el('div', { class: 'notification-row' },
+    el('div', { class: 'notification-mark' }, ic('bell', 17)),
+    el('div', { class: 'notification-info' },
+      el('div', { class: 'friend-name' }, title),
+      el('div', { class: 'muted' }, profile.login ? profile.login : (item.description || '')),
+      el('div', { class: 'comment-date' }, fmtDate(item.creation_date || item.timestamp || item.created_at))));
+  const releaseId = Number(release.id || item.release_id || item.related_release_id);
+  if (releaseId) row.addEventListener('click', () => openRelease(releaseId));
+  return row;
+}
+async function renderSocial() {
+  viewRoot.innerHTML = '';
+  if (!isAuthed()) { viewRoot.append(msg('Войдите в аккаунт, чтобы открыть запросы и уведомления.')); return; }
+  const tabs = el('div', { class: 'tabs' });
+  socialTabs.forEach((tab) => tabs.append(el('button', {
+    class: 'tab tab-ic' + (state.socialTab === tab.key ? ' active' : ''),
+    onclick: () => { state.socialTab = tab.key; state.socialPage = 0; renderSocial(); },
+  }, ic(tab.icon, 15), el('span', {}, tab.label))));
+  const body = el('div', { class: 'social-body' }, spinner());
+  viewRoot.append(tabs, body);
+  const page = state.socialPage;
+  let res;
+  if (state.socialTab === 'incoming') res = await window.anixart.friendRequestsIn(page);
+  else if (state.socialTab === 'outgoing') res = await window.anixart.friendRequestsOut(page);
+  else if (state.socialTab === 'blocked') res = await window.anixart.blockList(page);
+  else {
+    const selected = notificationTabs.find((tab) => tab.key === state.notificationTab) || notificationTabs[0];
+    const getNotifications = selected.category
+      ? window.anixart.notificationCategory(selected.category, page)
+      : window.anixart.notifications(page);
+    const mine = await getNotifications;
+    if (state.view !== 'social') return;
+    body.innerHTML = '';
+    const filters = el('div', { class: 'tabs notification-tabs' });
+    notificationTabs.forEach((tab) => filters.append(el('button', {
+      class: 'tab' + (state.notificationTab === tab.key ? ' active' : ''),
+      onclick: () => { state.notificationTab = tab.key; state.socialPage = 0; renderSocial(); },
+    }, tab.label)));
+    const readAll = iconBtn('btn secondary notification-read', 'check', 'Прочитать всё', async () => { await window.anixart.notificationRead(); renderSocial(); });
+    body.append(filters, readAll);
+    const items = apiItems(mine);
+    if (items.length) { const list = el('div', { class: 'notification-list' }); items.forEach((n) => list.append(renderNotification(n))); body.append(list); }
+    else body.append(msg(mine && (mine._error || mine._empty || (mine.code && mine.code !== 0)) ? 'Не удалось загрузить уведомления.' : 'Уведомлений пока нет.'));
+    body.append(makePager(page, () => { state.socialPage = Math.max(0, page - 1); renderSocial(); }, () => { state.socialPage = page + 1; renderSocial(); }));
+    return;
+  }
+  if (state.view !== 'social') return;
+  body.innerHTML = '';
+  const rows = apiItems(res);
+  if (!rows.length) {
+    body.append(msg(res && (res._error || res._empty || (res.code && res.code !== 0)) ? 'Не удалось загрузить список AniXart.' : 'Здесь пока пусто.'));
+  } else {
+    const list = el('div', { class: 'social-list' });
+    rows.forEach((item) => {
+      let action = null;
+      if (state.socialTab === 'incoming') action = [
+        { label: 'Принять', run: (id) => window.anixart.friendRequestSend(id) },
+        { label: 'Скрыть', run: (id) => window.anixart.friendRequestHide(id) },
+      ];
+      else if (state.socialTab === 'outgoing') action = { label: 'Отменить', run: (id) => window.anixart.friendRequestRemove(id) };
+      else action = { label: 'Разблокировать', run: (id) => window.anixart.blockRemove(id) };
+      list.append(renderSocialPerson(item, action));
+    });
+    body.append(list);
+  }
+  body.append(makePager(page, () => { state.socialPage = Math.max(0, page - 1); renderSocial(); }, () => { state.socialPage = page + 1; renderSocial(); }));
+}
 function channelRow(c) {
   let subbed = !!c.is_subscribed;
   const subBtn = el('button', { class: 'btn' + (subbed ? ' secondary' : '') });
@@ -335,6 +492,18 @@ async function openChannel(c) {
     el('div', {}, el('h2', { style: 'font-size:22px' }, c.title || 'Канал'), el('div', { class: 'muted' }, (c.subscriber_count ?? 0) + ' подписчиков'),
       el('div', { class: 'muted', style: 'margin-top:8px;font-size:13.5px' }, c.description || ''))));
   const box = el('div', {}); viewRoot.append(box); box.append(spinner());
+  const subsBox = el('div', { class: 'channel-subs-box' });
+  const renderSubsPage = async (page) => {
+    subsBox.innerHTML = ''; subsBox.append(spinner());
+    const res = await window.anixart.channelSubscribers(c.id, page);
+    subsBox.innerHTML = '';
+    const users = apiItems(res);
+    if (!users.length) { subsBox.append(msg('Не удалось загрузить подписчиков или список пуст.')); return; }
+    const grid = el('div', { class: 'friends-grid' }); users.forEach((u) => grid.append(userCard(u.profile || u)));
+    subsBox.append(sectionTitle('Подписчики', 'friends'), grid, makePager(page, () => renderSubsPage(Math.max(0, page - 1)), () => renderSubsPage(page + 1)));
+  };
+  const subsBtn = iconBtn('btn secondary', 'friends', 'Подписчики', () => renderSubsPage(0));
+  viewRoot.append(subsBtn, subsBox);
   const res = await window.anixart.channelArticles(c.id, 0);
   box.innerHTML = '';
   const arts = (res && res.content) || [];
@@ -410,7 +579,22 @@ async function renderProfile() {
       el('div', { class: 'profile-sub muted' }, 'на проекте давно' + (p.friend_count ? ' · ' + p.friend_count + ' друзей' : '')),
       socialLinks(p)));
   if (isMe) { const editBtn = iconBtn('btn secondary', 'edit', 'Статус', editStatus); editBtn.style.marginLeft = 'auto'; head.append(editBtn); }
-  else { const back = iconBtn('btn secondary', 'back', 'Назад', () => { state.otherProfileId = null; setView('discover'); }); back.style.marginLeft = 'auto'; head.append(back); }
+  else {
+    const actions = el('div', { class: 'profile-actions' });
+    actions.append(iconBtn('btn secondary', 'back', 'Назад', () => { state.otherProfileId = null; setView('discover'); }));
+    actions.append(iconBtn('btn', 'plus', 'В друзья', async () => {
+      const res = await window.anixart.friendRequestSend(p.id);
+      if (res && res.code === 0) alert('Запрос в друзья отправлен.');
+      else alert('Не удалось отправить запрос (код ' + (res && res.code != null ? res.code : '?') + ').');
+    }));
+    actions.append(iconBtn('btn secondary', 'shield', 'В чёрный список', async () => {
+      if (!confirm('Добавить пользователя в чёрный список?')) return;
+      const res = await window.anixart.blockAdd(p.id);
+      if (res && res.code === 0) alert('Пользователь добавлен в чёрный список.');
+      else alert('Не удалось добавить пользователя (код ' + (res && res.code != null ? res.code : '?') + ').');
+    }));
+    head.append(actions);
+  }
   viewRoot.append(head);
 
   // Вкладки профиля
@@ -532,11 +716,21 @@ async function renderFriends(p, body) {
   body.innerHTML = '';
   const friends = (res && res.content) || [];
   const list = el('div', { class: 'friends-grid' });
-  if (!friends.length) body.append(msg('Друзей пока нет.')); else
-  friends.forEach((f) => list.append(el('div', { class: 'friend-card', onclick: () => openProfile(f.id) },
-    el('img', { class: 'friend-av', src: avatarUrl(f) || '', alt: '' }),
-    el('div', { class: 'friend-name' }, f.login || ('ID ' + f.id)),
-    el('div', { class: 'muted', style: 'font-size:12px' }, f.status || ''))));
+  if (!friends.length) body.append(msg('Друзей пока нет.'));
+  friends.forEach((f) => {
+    const card = el('div', { class: 'friend-card' },
+      el('img', { class: 'friend-av', src: avatarUrl(f) || '', alt: '' }),
+      el('div', { class: 'friend-name' }, f.login || ('ID ' + f.id)),
+      el('div', { class: 'muted', style: 'font-size:12px' }, f.status || ''));
+    card.querySelector('.friend-av').addEventListener('click', () => openProfile(f.id));
+    card.querySelector('.friend-name').addEventListener('click', () => openProfile(f.id));
+    if (!state.otherProfileId) {
+      const remove = el('button', { class: 'btn secondary', style: 'margin-top:10px' }, 'Удалить из друзей');
+      remove.addEventListener('click', async () => { if (!confirm('Удалить ' + (f.login || 'пользователя') + ' из друзей?')) return; await window.anixart.friendDelete(f.id); renderFriends(p, body); });
+      card.append(remove);
+    }
+    list.append(card);
+  });
   if (friends.length) body.append(list);
   try { const recs = await window.anixart.friendRecs(); const rl = (recs && recs.content) || []; if (rl.length) { body.append(sectionTitle('Возможно, вы знакомы')); const g = el('div', { class: 'friends-grid' }); rl.forEach((u) => g.append(userCard(u))); body.append(g); } } catch {}
 }
@@ -637,6 +831,8 @@ function renderProfileMenu() {
     const trigger = el('div', { class: 'pm-trigger' }, el('img', { class: 'pm-av', src: avatarUrl(p) || '', alt: '' }), el('span', { class: 'pm-name' }, p.login || ('ID ' + p.id)));
     const pop = el('div', { class: 'pm-pop', style: 'display:none' },
       iconBtn('', 'user', 'Профиль', () => { pop.style.display = 'none'; state.otherProfileId = null; setView('profile'); }),
+      iconBtn('', 'friends', 'Друзья и запросы', () => { pop.style.display = 'none'; state.socialTab = 'incoming'; state.socialPage = 0; setView('social'); }),
+      iconBtn('', 'bell', 'Уведомления', () => { pop.style.display = 'none'; state.socialTab = 'notifications'; state.socialPage = 0; setView('social'); }),
       iconBtn('', 'edit', 'Настройки', () => { pop.style.display = 'none'; setView('settings'); }),
       iconBtn('', 'logout', 'Выйти', () => { pop.style.display = 'none'; doLogout(); }));
     trigger.addEventListener('click', (e) => { e.stopPropagation(); pop.style.display = pop.style.display === 'none' ? 'block' : 'none'; });
@@ -660,12 +856,70 @@ function closeModal() { modal.classList.add('hidden'); modalCard.innerHTML = '';
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
 async function openRelease(id) {
+  state.releaseUpdatesPage = 0; state.releaseVideoPage = 0; state.releaseVideoCategory = 0;
   modal.classList.remove('hidden'); modalCard.innerHTML = ''; modalCard.append(spinner());
   const res = await window.anixart.release(id); const r = res.release;
   if (!r) { modalCard.innerHTML = ''; modalCard.append(msg('Не удалось загрузить релиз.')); return; }
   renderReleaseDetail(r);
 }
 function localIsFav(id) { return state.store.favorites.some((x) => x.id === id); }
+async function renderReleaseUpdates(id, container) {
+  container.innerHTML = ''; container.append(spinner());
+  const page = state.releaseUpdatesPage;
+  const res = await window.anixart.releaseUpdates(id, page);
+  container.innerHTML = '';
+  const items = apiItems(res);
+  if (!items.length) container.append(msg(res && (res._error || res._empty || (res.code && res.code !== 0)) ? 'Не удалось загрузить обновления серий.' : 'Новых обновлений серий нет.'));
+  else { const list = el('div', { class: 'updates-list' }); items.forEach((item) => list.append(renderUpdateItem(item))); container.append(list); }
+  container.append(makePager(page, () => { state.releaseUpdatesPage = Math.max(0, page - 1); renderReleaseUpdates(id, container); }, () => { state.releaseUpdatesPage = page + 1; renderReleaseUpdates(id, container); }));
+}
+let releaseVideoRequest = 0;
+async function renderReleaseVideos(id, container) {
+  const requestId = ++releaseVideoRequest;
+  const page = state.releaseVideoPage, categoryId = state.releaseVideoCategory;
+  container.innerHTML = ''; container.append(spinner());
+  const [info, categoriesResult, videosResult] = await Promise.all([
+    window.anixart.videoReleaseInfo(id),
+    window.anixart.videoCategories(),
+    categoryId ? window.anixart.videoReleaseCategory(id, categoryId, page) : window.anixart.videoRelease(id, page),
+  ]);
+  if (requestId !== releaseVideoRequest) return;
+  container.innerHTML = '';
+  const categories = (categoriesResult && categoriesResult.categories) || [];
+  if (categories.length) {
+    const filters = el('div', { class: 'tabs video-category-tabs' });
+    [{ id: 0, name: 'Все' }, ...categories].forEach((category) => filters.append(el('button', {
+      class: 'tab' + (Number(category.id) === Number(categoryId) ? ' active' : ''),
+      onclick: () => { state.releaseVideoCategory = Number(category.id) || 0; state.releaseVideoPage = 0; renderReleaseVideos(id, container); },
+    }, category.name || category.title || 'Категория')));
+    container.append(filters);
+  }
+  const items = apiItems(videosResult);
+  if (!items.length) container.append(msg(videosResult && (videosResult._error || videosResult._empty || (videosResult.code && videosResult.code !== 0)) ? 'Не удалось загрузить видео AniXart.' : 'Видео для этого релиза пока нет.'));
+  else {
+    const grid = el('div', { class: 'release-videos-grid' });
+    items.forEach((video) => {
+      const canPlay = !!(video.player_url || video.url);
+      grid.append(el('button', { class: 'release-video-card' + (canPlay ? ' clickable' : ''), type: 'button', onclick: canPlay ? () => openReleaseVideo(video) : null },
+        el('img', { class: 'release-video-image', src: video.image || '', loading: 'lazy', alt: '' }),
+        el('div', { class: 'release-video-title' }, video.title || video.name || 'Видео'),
+        el('div', { class: 'muted' }, [video.category && video.category.name, video.hosting && video.hosting.name].filter(Boolean).join(' · '))));
+    });
+    container.append(grid);
+  }
+  if (info && info.can_appeal) container.append(el('div', { class: 'hint', style: 'margin-top:12px' }, 'У релиза включена возможность отправить апелляцию на видео. Форма подачи пока не перенесена.'));
+  container.append(makePager(page, () => { state.releaseVideoPage = Math.max(0, page - 1); renderReleaseVideos(id, container); }, () => { state.releaseVideoPage = page + 1; renderReleaseVideos(id, container); }));
+}
+function openReleaseVideo(video) {
+  const playerUrl = video.player_url || video.url;
+  if (!playerUrl || !/^https?:\/\//i.test(playerUrl)) return;
+  modalCard.innerHTML = '';
+  modalCard.append(el('button', { class: 'close-x', onclick: closeModal }, '×'), el('h2', { class: 'release-video-heading' }, video.title || 'Видео'));
+  const bridge = new URL('playerbridge.js', location.href).href;
+  const frame = el('webview', { class: 'release-video-player', allowpopups: true, src: 'about:blank', preload: bridge, webpreferences: 'contextIsolation=no' });
+  frame.src = 'player.html#u=' + encodeURIComponent(playerUrl);
+  modalCard.append(frame);
+}
 function renderReleaseDetail(r) {
   modalCard.innerHTML = '';
   const genres = (r.genres || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -695,12 +949,14 @@ function renderReleaseDetail(r) {
   const shots = r.screenshot_images || [];
   const related = [...(r.related_releases || []), ...(r.recommended_releases || [])].filter((x) => x && x.id);
   const mtabBody = el('div', { class: 'mtab-body' });
-  const TABS = [{ key: 'desc', label: 'Описание' }, shots.length ? { key: 'shots', label: 'Кадры ' + shots.length } : null, related.length ? { key: 'related', label: 'Похожее ' + related.length } : null, { key: 'comments', label: 'Комментарии' }].filter(Boolean);
+  const TABS = [{ key: 'desc', label: 'Описание' }, { key: 'updates', label: 'Обновления' }, { key: 'videos', label: 'Видео' }, shots.length ? { key: 'shots', label: 'Кадры ' + shots.length } : null, related.length ? { key: 'related', label: 'Похожее ' + related.length } : null, { key: 'comments', label: 'Комментарии' }].filter(Boolean);
   const mtabs = el('div', { class: 'mtabs' });
   const renderTab = (key) => {
     mtabs.querySelectorAll('.mtab').forEach((t) => t.classList.toggle('active', t.dataset.k === key));
     mtabBody.innerHTML = '';
     if (key === 'desc') mtabBody.append(el('div', { class: 'detail-desc' }, (r.description || 'Нет описания.').replace(/\s+/g, ' ').trim()));
+    else if (key === 'updates') renderReleaseUpdates(r.id, mtabBody);
+    else if (key === 'videos') renderReleaseVideos(r.id, mtabBody);
     else if (key === 'shots') { const g = el('div', { class: 'shots-grid' }); shots.forEach((s) => g.append(el('div', { class: 'shot', onclick: () => lightbox(s) }, el('img', { src: s, loading: 'lazy' })))); mtabBody.append(g); }
     else if (key === 'related') mtabBody.append(makeGrid(related));
     else if (key === 'comments') loadComments(r.id, mtabBody);
@@ -797,6 +1053,19 @@ async function openArticle(a, ch) {
     el('div', {}, el('div', { class: 'comment-author', style: 'font-size:16px' }, (ch && ch.title) || 'Канал'), el('div', { class: 'comment-date' }, fmtDate(a.creation_date)))));
   const body = renderArticleBody(a); body.setAttribute('style', 'padding:16px 32px 6px'); modalCard.append(body);
   if (a.repost_article) { const rch = a.repost_article.channel; const rb = renderArticleBody(a.repost_article); const box = el('div', { class: 'repost-box', style: 'margin:0 32px 10px' }, el('div', { class: 'comment-author', style: 'margin-bottom:8px' }, '🔁 ' + ((rch && rch.title) || 'Репост')), rb); modalCard.append(box); }
+  const repostsBox = el('div', { style: 'padding:0 32px 12px' });
+  const repostsBtn = iconBtn('btn secondary', 'repost', 'Показать репосты' + (a.repost_count ? ' (' + a.repost_count + ')' : ''), async () => {
+    repostsBtn.disabled = true; repostsBox.innerHTML = ''; repostsBox.append(spinner());
+    const res = await window.anixart.articleReposts(a.id, 0);
+    repostsBtn.disabled = false; repostsBox.innerHTML = '';
+    const items = apiItems(res);
+    if (!items.length) { repostsBox.append(msg('Репостов нет или список недоступен.')); return; }
+    items.forEach((item) => {
+      const owner = item.profile || item.author || item.channel || {};
+      repostsBox.append(el('div', { class: 'notification-row' }, el('div', { class: 'notification-mark' }, ic('repost', 16)), el('div', { class: 'notification-info' }, el('div', { class: 'friend-name' }, owner.title || owner.login || 'Репост'), el('div', { class: 'comment-date' }, fmtDate(item.creation_date || item.timestamp)))));
+    });
+  });
+  repostsBox.append(repostsBtn); modalCard.append(repostsBox);
   const cbox = el('div', { style: 'padding:6px 32px 32px' }); modalCard.append(cbox);
   cbox.append(sectionTitle('Комментарии', 'comment'));
   const reload = el('div', {});

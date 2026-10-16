@@ -338,6 +338,43 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139,92,255
 .friend-card:hover { transform: translateY(-3px); border-color: var(--line-2); }
 .friend-av { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background: var(--bg-3); margin-bottom: 10px; }
 .friend-name { font-weight: 700; font-size: 14px; }
+.profile-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; position: relative; z-index: 1; }
+.social-body { margin-top: 18px; }
+.social-list, .notification-list { display: flex; flex-direction: column; gap: 10px; }
+.social-item, .notification-row { display: flex; align-items: center; gap: 14px; min-height: 76px; padding: 12px 16px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+.social-item .friend-av { width: 48px; height: 48px; margin: 0; cursor: pointer; }
+.social-person, .notification-info { flex: 1; min-width: 0; }
+.social-person .link { cursor: pointer; }
+.social-person .link:hover { color: var(--accent); }
+.notification-row { cursor: pointer; }
+.notification-row:hover { border-color: var(--line-2); }
+.notification-mark { width: 38px; height: 38px; display: grid; place-items: center; flex-shrink: 0; border-radius: 12px; color: var(--accent); background: rgba(139,92,255,.12); }
+.notification-tabs { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+.notification-read { margin: 0 0 14px auto; display: flex; }
+.social-item .btn { flex-shrink: 0; }
+.updates-list { display: flex; flex-direction: column; gap: 10px; }
+.update-row { display: flex; align-items: center; gap: 14px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
+.update-row.clickable { cursor: pointer; transition: border-color .15s, transform .15s; }
+.update-row.clickable:hover { border-color: var(--line-2); transform: translateY(-1px); }
+.update-poster { width: 54px; height: 74px; object-fit: cover; border-radius: 9px; background: var(--bg-3); flex-shrink: 0; }
+.update-info { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.update-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-subs-box { margin: 14px 0 22px; }
+.video-category-tabs { overflow-x: auto; flex-wrap: nowrap; margin-bottom: 14px; }
+.release-videos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; }
+.release-video-card { min-width: 0; overflow: hidden; text-align: left; padding: 0 0 12px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 14px; font: inherit; }
+.release-video-card.clickable { cursor: pointer; transition: transform .18s, border-color .18s; }
+.release-video-card.clickable:hover { transform: translateY(-2px); border-color: var(--line-2); }
+.release-video-image { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: var(--bg-3); }
+.release-video-title { padding: 10px 12px 4px; font-weight: 700; }
+.release-video-card .muted { padding: 0 12px; font-size: 12px; }
+.release-video-heading { margin: 22px 60px 16px 24px; font-size: 18px; }
+.release-video-player { display: block; width: calc(100% - 48px); height: min(68vh, 620px); margin: 0 24px 24px; border: 0; border-radius: 14px; background: #000; }
+@media (max-width: 1080px) {
+  .topnav { gap: 8px; padding-left: 14px; }
+  .nav-pill { padding: 8px 10px; gap: 5px; font-size: 13px; }
+  .brand-text { display: none; }
+}
 
 /* ── Лента / каналы ───────────────────────────────────── */
 .channel-list { display: flex; flex-direction: column; gap: 10px; }
